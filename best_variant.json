@@ -1,0 +1,19 @@
+{
+  "run_id": 23,
+  "feature_set": "managed",
+  "features": "fire_protection_code,equipment_count,nozzle_count,extinguishing_agents_code,initial_means_code,alarm_type_code,t_report_min,t_arrival_min,t_first_hose_min,t_contained_min,t_extinguished_min,distance_to_station",
+  "imputation": "impute",
+  "algorithm": "kmeans",
+  "k": 7,
+  "rows_used": 1700,
+  "silhouette": 0.29668252940020695,
+  "davies_bouldin": 1.3281974188960823,
+  "calinski_harabasz": 291.7294401232003,
+  "inertia": 10030.03841966756,
+  "cluster_min": "30",
+  "cluster_max": "700",
+  "cluster_smallest_share": 0.01764705882352941,
+  "spearman": 0.2377539132908103,
+  "purity": 0.44963079130856587,
+  "nmi": 0.037521209214051894
+}
