@@ -1,0 +1,24 @@
+services:
+  openhands:
+    image: docker.openhands.dev/openhands/openhands:latest
+    container_name: openhands
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OH_SECRET_KEY=${OH_SECRET_KEY}
+      - LOG_ALL_EVENTS=true
+      - LLM_BASE_URL=${LM_BASE_URL}
+      - LLM_API_KEY=${LM_API_KEY}
+      - LLM_MODEL=${LM_MODEL}
+      - WORKSPACE_DIR=/workspace/project
+      - SANDBOX_VOLUMES=${HOST_WORKSPACE}:/workspace/project:rw
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOST_WORKSPACE}:/workspace/project:rw
+      - openhands_state:/home/openhands/.openhands
+
+volumes:
+  openhands_state:

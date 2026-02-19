@@ -1,0 +1,13 @@
+line-length = 100
+target-version = "py39"
+src = ["src"]
+extend-include = ["*.ipynb"]
+
+[lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*.py" = ["D100", "D101", "D102", "D103"]
+"*.ipynb" = ["E402"]
