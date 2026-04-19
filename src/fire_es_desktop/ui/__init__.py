@@ -14,6 +14,7 @@ from .pages import (
     ImportPage,
     TrainingPage,
     LPRPredictPage,
+    LPRDecisionHistoryPage,
     ModelsPage,
     LogPage
 )
@@ -24,6 +25,7 @@ __all__ = [
     "ImportPage",
     "TrainingPage",
     "LPRPredictPage",
+    "LPRDecisionHistoryPage",
     "ModelsPage",
     "LogPage",
 ]

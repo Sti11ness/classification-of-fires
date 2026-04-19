@@ -146,9 +146,10 @@ def bootstrap_predict_rank(
             estimators = [estimators[i] for i in sampled_indices]
 
         probs_list = []
+        X_values = X.to_numpy()
         for est in estimators:
             if hasattr(est, "predict_proba"):
-                probs_list.append(est.predict_proba(X))
+                probs_list.append(est.predict_proba(X_values))
 
         if probs_list:
             # shape: (n_estimators, n_samples, n_classes)

@@ -409,7 +409,9 @@ def train_classifier(
         "metrics": metrics,
         "y_pred": y_pred,
         "y_pred_proba": y_pred_proba,
+        "X_train": X_train,
         "X_test": X_test,
+        "y_train": y_train,
         "y_test": y_test,
     }
 
@@ -487,7 +489,9 @@ def train_random_forest_classifier(
         "metrics": metrics,
         "y_pred": y_pred,
         "y_pred_proba": y_pred_proba,
+        "X_train": X_train,
         "X_test": X_test,
+        "y_train": y_train,
         "y_test": y_test,
     }
 

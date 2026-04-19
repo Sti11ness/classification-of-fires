@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any, List, Callable
 
 from ..use_cases import TrainModelUseCase, UseCaseResult
 from ..infra import ModelRegistry
+from fire_es.rank_tz_contract import get_feature_set_spec
 
 logger = logging.getLogger("TrainModelViewModel")
 
@@ -52,9 +53,9 @@ class TrainModelViewModel:
         # Параметры обучения
         self.target = "rank_tz"
         self.model_type = "random_forest"  # 'decision_tree' или 'random_forest'
-        self.feature_set = "basic"  # 'basic', 'extended', 'custom'
+        self.feature_set = "online_tactical"
         self.custom_features: List[str] = []
-        self.test_size = 0.2
+        self.test_size = 0.25
         self.class_weight = "balanced"
 
         # Callbacks
@@ -136,7 +137,8 @@ class TrainModelViewModel:
                     dataset_info={
                         "samples": result.data["samples"],
                         "features_count": len(result.data["feature_names"])
-                    }
+                    },
+                    extra=result.data.get("registry_extra"),
                 )
 
                 if self.on_training_complete:
@@ -157,7 +159,7 @@ class TrainModelViewModel:
 
     def get_available_targets(self) -> List[str]:
         """Получить доступные целевые переменные."""
-        return ["rank_tz", "equipment_count", "nozzle_count"]
+        return ["rank_tz"]
 
     def get_available_model_types(self) -> List[Dict[str, str]]:
         """Получить доступные типы моделей."""
@@ -169,9 +171,10 @@ class TrainModelViewModel:
     def get_available_feature_sets(self) -> List[Dict[str, str]]:
         """Получить доступные наборы признаков."""
         return [
-            {"value": "basic", "label": "Базовый"},
-            {"value": "extended", "label": "Расширенный"},
-            {"value": "custom", "label": "Пользовательский"}
+            {"value": "online_tactical", "label": get_feature_set_spec("online_tactical")["label"]},
+            {"value": "extended", "label": get_feature_set_spec("extended")["label"]},
+            {"value": "enhanced_tactical", "label": get_feature_set_spec("enhanced_tactical")["label"]},
+            {"value": "custom", "label": "Custom (offline only)"},
         ]
 
     def set_model_active(self, model_id: str) -> bool:

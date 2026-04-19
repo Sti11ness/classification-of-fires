@@ -67,7 +67,8 @@ class ModelRegistry:
         features: List[str],
         metrics: Dict[str, float],
         params: Dict[str, Any],
-        dataset_info: Optional[Dict[str, Any]] = None
+        dataset_info: Optional[Dict[str, Any]] = None,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Зарегистрировать модель.
@@ -96,6 +97,9 @@ class ModelRegistry:
             "artifact_path": f"model_{model_id}.joblib",
             "metadata_path": f"model_{model_id}_meta.json"
         }
+
+        if extra:
+            model_entry.update(extra)
 
         self.registry["models"].append(model_entry)
         self._save_registry()
@@ -143,6 +147,17 @@ class ModelRegistry:
             self.logger.error(f"Model not found: {model_id}")
             return False
 
+        if (
+            model_info.get("target") == "rank_tz"
+            and model_info.get("deployment_role") != "rank_tz_lpr_production"
+        ):
+            self.logger.error(
+                "Refusing to activate non-production rank_tz model: %s (%s)",
+                model_id,
+                model_info.get("deployment_role"),
+            )
+            return False
+
         # Снять активность со всех
         for model in self.registry["models"]:
             model["is_active"] = False
@@ -165,6 +180,24 @@ class ModelRegistry:
         if not active_id:
             return None
         return self.get_model_info(active_id)
+
+    def get_active_model_for_role(
+        self,
+        *,
+        target: str,
+        deployment_role: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Получить активную модель, совместимую с deploy role."""
+        active = self.get_active_model_info()
+        if not active:
+            return None
+        if active.get("target") != target:
+            return None
+        if active.get("deployment_role") != deployment_role:
+            return None
+        if active.get("offline_only"):
+            return None
+        return active
 
     def delete_model(self, model_id: str) -> None:
         """

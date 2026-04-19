@@ -1,45 +1,34 @@
 # src/fire_es_desktop/use_cases/batch_predict_export_use_case.py
 """
-BatchPredictExportUseCase — пакетный прогноз и экспорт результатов.
-
-Согласно spec_first.md раздел 8.2:
-- вход: Excel/выборка из БД
-- выход: Excel/CSV с прогнозами + доверительность + версия модели
-- сохранение в reports/tables
+BatchPredictExportUseCase — batch rank_tz inference using the production contract.
 """
+
+from __future__ import annotations
 
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
-import numpy as np
+import joblib
 import pandas as pd
 
 from .base_use_case import BaseUseCase, UseCaseResult, UseCaseStatus
 
-# Импорт из domain слоя
+# Import from domain layer
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "fire_es"))
 
-from fire_es.model_train import FEATURE_SETS
 from fire_es.predict import RANK_NAMES, predict_with_confidence
+from fire_es.rank_tz_contract import PRODUCTION_DEPLOYMENT_ROLE, apply_preprocessor_artifact
 
 logger = logging.getLogger("BatchPredictExportUseCase")
 
 
 class BatchPredictExportUseCase(BaseUseCase):
-    """
-    Сценарий пакетного прогноза и экспорта.
-
-    Шаги:
-    1. Загрузка входных данных (Excel/БД)
-    2. Загрузка активной модели
-    3. Прогноз по всем записям
-    4. Экспорт результатов (Excel/CSV)
-    """
+    """Batch rank_tz inference and export for the production-safe model."""
 
     def __init__(self, models_path: Path, reports_path: Path):
         super().__init__(
@@ -60,174 +49,124 @@ class BatchPredictExportUseCase(BaseUseCase):
         n_bootstrap: int = 30,
         model_id: Optional[str] = None,
     ) -> UseCaseResult:
-        """
-        Выполнить пакетный прогноз и экспорт.
-
-        Args:
-            input_source: Источник данных ("excel" или "database").
-            input_path: Путь к Excel файлу (если input_source="excel").
-            output_format: Формат экспорта ("excel" или "csv").
-            feature_set: Набор признаков для модели.
-            top_k: Количество вариантов прогноза.
-            use_bootstrap: Использовать ли бутстрап.
-            n_bootstrap: Количество бутстрап-выборок.
-            model_id: ID модели (None = активная модель).
-
-        Returns:
-            Результат выполнения.
-        """
         self.status = UseCaseStatus.RUNNING
         self._cancel_requested = False
-        warnings: List[str] = []
+        warnings: list[str] = []
 
         try:
-            import joblib
-
-            # Шаг 1: Загрузка входных данных
             self.report_progress(1, 4, "Загрузка входных данных")
             self.check_cancelled()
 
-            if input_source == "excel":
-                if not input_path:
-                    return UseCaseResult(
-                        success=False,
-                        message="Не указан путь к Excel файлу",
-                        warnings=warnings,
-                    )
-                if not input_path.exists():
-                    return UseCaseResult(
-                        success=False,
-                        message=f"Файл не найден: {input_path}",
-                        warnings=warnings,
-                    )
-                df_input = pd.read_excel(input_path)
-                logger.info("Загружено %s записей из Excel", len(df_input))
-            elif input_source == "database":
+            if input_source != "excel":
                 return UseCaseResult(
                     success=False,
-                    message="Загрузка из БД пока не реализована для пакетного прогноза",
+                    message="Для production pipeline поддержан только Excel input",
                     warnings=warnings,
                 )
-            else:
+            if not input_path or not input_path.exists():
                 return UseCaseResult(
                     success=False,
-                    message=f"Неизвестный источник: {input_source}",
+                    message="Входной Excel файл не найден",
                     warnings=warnings,
                 )
 
-            # Шаг 2: Загрузка модели
-            self.report_progress(2, 4, "Загрузка модели")
+            df_input = pd.read_excel(input_path)
+
+            self.report_progress(2, 4, "Загрузка production-модели")
             self.check_cancelled()
 
-            model_path, metadata = self._resolve_model(model_id=model_id, warnings=warnings)
-            if model_path is None or not model_path.exists():
+            model_info = self._resolve_model_info(model_id=model_id)
+            if not model_info:
                 return UseCaseResult(
                     success=False,
-                    message="Модель не найдена",
+                    message="Нет активной production-safe модели rank_tz для пакетного прогноза",
                     warnings=warnings,
                 )
 
-            model = joblib.load(model_path)
-            model_id_value = model_path.stem.replace("model_", "", 1)
-            model_info = {
-                "model_id": model_id_value,
-                "model_name": metadata.get("model_name", model_path.stem),
-                "model_path": str(model_path),
-                "model_type": type(model).__name__,
-            }
+            artifact_path = self.models_path / model_info["artifact_path"]
+            preprocessor_path = self.models_path / model_info["preprocessor_path"]
+            if not artifact_path.exists() or not preprocessor_path.exists():
+                return UseCaseResult(
+                    success=False,
+                    message="Не найдены артефакты активной production модели",
+                    warnings=warnings,
+                )
 
-            # Шаг 3: Подготовка и прогноз
+            model = joblib.load(artifact_path)
+            with open(preprocessor_path, "r", encoding="utf-8") as f:
+                preprocessor_artifact = json.load(f)
+
+            missing_input_columns = [
+                field["name"]
+                for field in preprocessor_artifact.get("input_schema", [])
+                if field["name"] not in df_input.columns
+            ]
+            if missing_input_columns:
+                warnings.append(
+                    "Во входном файле отсутствуют колонки, они будут заполнены train-time imputer: "
+                    + ", ".join(missing_input_columns)
+                )
+
             self.report_progress(3, 4, f"Прогноз ({len(df_input)} записей)")
             self.check_cancelled()
 
-            required_features = metadata.get("features") or FEATURE_SETS.get(feature_set, [])
-            if not required_features:
-                return UseCaseResult(
-                    success=False,
-                    message=(
-                        f"Не удалось определить признаки для feature_set='{feature_set}'. "
-                        "Проверьте метаданные модели."
-                    ),
-                    warnings=warnings,
-                )
+            X = apply_preprocessor_artifact(df_input, preprocessor_artifact)
 
-            missing_cols = [c for c in required_features if c not in df_input.columns]
-            if missing_cols:
-                warnings.append(f"Отсутствуют колонки: {missing_cols}")
-                for col in missing_cols:
-                    df_input[col] = np.nan
-
-            X = df_input[required_features].copy()
-            X = X.replace([np.inf, -np.inf], np.nan)
-            if feature_set in {"online_dispatch", "online_early", "online_tactical"}:
-                X = X.fillna(-1)
-            else:
-                X = X.fillna(0)
-
-            predictions: List[Dict[str, Any]] = []
-            n_records = len(X)
-            for i in range(n_records):
+            rows: list[dict[str, Any]] = []
+            for index in range(len(X)):
                 self.check_cancelled()
-                if (i + 1) % 100 == 0 or (i + 1) == n_records:
-                    self.report_progress(3, 4, f"Прогноз: {i + 1}/{n_records}")
+                if (index + 1) % 100 == 0 or (index + 1) == len(X):
+                    self.report_progress(3, 4, f"Прогноз: {index + 1}/{len(X)}")
 
-                X_row = X.iloc[[i]]
-                try:
-                    pred_result = predict_with_confidence(
-                        model,
-                        X_row,
-                        top_k=top_k,
-                        use_bootstrap=use_bootstrap,
-                        n_bootstrap=n_bootstrap,
+                pred_result = predict_with_confidence(
+                    model,
+                    X.iloc[[index]],
+                    top_k=top_k,
+                    use_bootstrap=use_bootstrap,
+                    n_bootstrap=n_bootstrap,
+                )
+                pred_df = pred_result.get("predictions")
+                if pred_df is None or pred_df.empty:
+                    raise RuntimeError(f"Пустой результат модели для строки {index}")
+
+                pred_row = pred_df.iloc[0].to_dict()
+                row_result = {
+                    "row_index": index,
+                    "predicted_rank": pred_row.get("predicted_rank"),
+                    "predicted_rank_name": RANK_NAMES.get(
+                        pred_row.get("predicted_rank"),
+                        str(pred_row.get("predicted_rank")),
+                    ),
+                    "model_id": model_info["model_id"],
+                    "model_name": model_info.get("name", ""),
+                    "deployment_role": model_info.get("deployment_role"),
+                }
+                for k in range(1, top_k + 1):
+                    rank_key = f"top{k}_rank"
+                    if rank_key not in pred_row:
+                        continue
+                    row_result[rank_key] = pred_row.get(rank_key)
+                    row_result[f"top{k}_rank_name"] = pred_row.get(
+                        f"top{k}_rank_name",
+                        str(pred_row.get(rank_key)),
                     )
-                    pred_df = pred_result.get("predictions")
-                    if pred_df is None or pred_df.empty:
-                        raise RuntimeError("пустой ответ модели")
-                    pred_data = pred_df.iloc[0].to_dict()
+                    row_result[f"top{k}_prob"] = pred_row.get(f"top{k}_prob", 0.0)
 
-                    row_result: Dict[str, Any] = {
-                        "row_index": i,
-                        "predicted_rank": pred_data.get("predicted_rank"),
-                        "predicted_rank_name": RANK_NAMES.get(
-                            pred_data.get("predicted_rank"),
-                            str(pred_data.get("predicted_rank")),
-                        ),
-                    }
+                if use_bootstrap:
+                    row_result["confidence"] = pred_row.get("mean_prob_class", 0.0)
+                    row_result["uncertainty"] = pred_row.get("std_prob_class", 0.0)
 
-                    for k in range(1, top_k + 1):
-                        rank_key = f"top{k}_rank"
-                        if rank_key not in pred_data:
-                            continue
-                        row_result[rank_key] = pred_data.get(rank_key)
-                        row_result[f"top{k}_rank_name"] = pred_data.get(
-                            f"top{k}_rank_name",
-                            str(pred_data.get(rank_key)),
-                        )
-                        row_result[f"top{k}_prob"] = pred_data.get(f"top{k}_prob", 0.0)
+                rows.append(row_result)
 
-                    if use_bootstrap:
-                        row_result["confidence"] = pred_data.get("mean_prob_class", 0.0)
-                        row_result["uncertainty"] = pred_data.get("std_prob_class", 0.0)
-
-                    row_result.update(model_info)
-                    predictions.append(row_result)
-                except Exception as e:
-                    err_text = f"Ошибка прогноза для строки {i}: {e}"
-                    logger.error(err_text)
-                    warnings.append(err_text)
-                    predictions.append({"row_index": i, "error": str(e), **model_info})
-
-            df_predictions = pd.DataFrame(predictions)
+            df_predictions = pd.DataFrame(rows)
             df_result = pd.concat([df_input.reset_index(drop=True), df_predictions], axis=1)
 
-            # Шаг 4: Экспорт
             self.report_progress(4, 4, "Экспорт результатов")
             self.check_cancelled()
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_dir = self.reports_path / "tables"
             output_dir.mkdir(parents=True, exist_ok=True)
-
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             if output_format == "excel":
                 output_path = output_dir / f"batch_prediction_{timestamp}.xlsx"
                 df_result.to_excel(output_path, index=False, engine="openpyxl")
@@ -244,13 +183,17 @@ class BatchPredictExportUseCase(BaseUseCase):
             self.status = UseCaseStatus.COMPLETED
             return UseCaseResult(
                 success=True,
-                message=f"Пакетный прогноз завершён: {len(predictions)} записей",
+                message=f"Пакетный прогноз завершён: {len(rows)} записей",
                 data={
                     "output_path": str(output_path),
-                    "predictions_count": len(predictions),
-                    "input_count": n_records,
+                    "predictions_count": len(rows),
+                    "input_count": len(df_input),
                     "warnings": warnings,
-                    "model_info": model_info,
+                    "model_info": {
+                        "model_id": model_info["model_id"],
+                        "model_name": model_info.get("name", ""),
+                        "deployment_role": model_info.get("deployment_role"),
+                    },
                 },
                 warnings=warnings,
             )
@@ -265,52 +208,25 @@ class BatchPredictExportUseCase(BaseUseCase):
                 warnings=warnings,
             )
 
-    def _resolve_model(
-        self,
-        model_id: Optional[str],
-        warnings: List[str],
-    ) -> Tuple[Optional[Path], Dict[str, Any]]:
-        """Найти модель и метаданные (active -> latest fallback)."""
-        model_path: Optional[Path] = None
-        metadata: Dict[str, Any] = {}
+    def _resolve_model_info(self, model_id: Optional[str]) -> Optional[dict[str, Any]]:
+        from ..infra import ModelRegistry
 
+        registry = ModelRegistry(self.models_path)
         if model_id:
-            candidate = self.models_path / f"model_{model_id}.joblib"
-            if candidate.exists():
-                model_path = candidate
-        else:
-            try:
-                from ..infra import ModelRegistry
+            model_info = registry.get_model_info(model_id)
+            if not model_info:
+                return None
+            if model_info.get("target") != "rank_tz":
+                return None
+            if model_info.get("deployment_role") != PRODUCTION_DEPLOYMENT_ROLE:
+                return None
+            if model_info.get("offline_only"):
+                return None
+            if not model_info.get("preprocessor_path"):
+                return None
+            return model_info
 
-                registry = ModelRegistry(self.models_path)
-                active = registry.get_active_model_info()
-                if active:
-                    artifact_rel = active.get("artifact_path")
-                    if artifact_rel:
-                        candidate = self.models_path / artifact_rel
-                    else:
-                        candidate = self.models_path / f"model_{active['model_id']}.joblib"
-                    if candidate.exists():
-                        model_path = candidate
-            except Exception as e:
-                warnings.append(f"Не удалось прочитать registry моделей: {e}")
-
-            if model_path is None:
-                model_files = sorted(
-                    self.models_path.glob("model_*.joblib"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                if model_files:
-                    model_path = model_files[0]
-
-        if model_path:
-            metadata_path = model_path.with_name(f"{model_path.stem}_meta.json")
-            if metadata_path.exists():
-                try:
-                    with open(metadata_path, "r", encoding="utf-8") as f:
-                        metadata = json.load(f)
-                except Exception as e:
-                    warnings.append(f"Не удалось загрузить метаданные модели: {e}")
-
-        return model_path, metadata
+        return registry.get_active_model_for_role(
+            target="rank_tz",
+            deployment_role=PRODUCTION_DEPLOYMENT_ROLE,
+        )

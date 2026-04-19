@@ -1,4 +1,6 @@
 # src/fire_es_desktop/ui/pages/lpr_predict_page.py
+from __future__ import annotations
+
 """
 LPRPredictPage — экран прогноза для ЛПР.
 
@@ -10,16 +12,229 @@ LPRPredictPage — экран прогноза для ЛПР.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QFormLayout, QLineEdit, QDoubleSpinBox, QSpinBox,
-    QComboBox, QTextEdit, QFrame, QSplitter, QMessageBox, QProgressBar,
+    QGroupBox, QFormLayout, QDoubleSpinBox, QSpinBox,
+    QComboBox, QTextEdit, QSplitter, QMessageBox, QProgressBar,
+    QAbstractSpinBox,
     QTableWidget
 )
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QKeyEvent, QValidator
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 import pandas as pd
+from fire_es.rank_tz_contract import get_input_schema
+
+
+class NullableSpinBox(QSpinBox):
+    """QSpinBox with placeholder-style null state."""
+
+    def __init__(
+        self,
+        null_value: int = -1,
+        *,
+        input_min: int = 0,
+        allow_negative_input: bool = False,
+    ):
+        super().__init__()
+        self._null_value = null_value
+        self._input_min = input_min
+        self._allow_negative_input = allow_negative_input
+        self._display_suffix = ""
+        self._is_null = True
+        self._syncing_null_state = False
+
+        self.setSpecialValueText("")
+        self.lineEdit().setPlaceholderText("Не указано")
+        self.lineEdit().textEdited.connect(self._on_text_edited)
+        self.editingFinished.connect(self._on_editing_finished)
+        self.valueChanged.connect(self._on_value_changed)
+        self.set_nullable_value(None)
+
+    def set_nullable_value(self, value: Optional[int]) -> None:
+        """Set a nullable value; None keeps the field visually empty."""
+        self._syncing_null_state = True
+        if value is None:
+            self._is_null = True
+            self.setSuffix("")
+            baseline = self._null_value
+            if baseline < self.minimum() or baseline > self.maximum():
+                baseline = self._input_min
+            super().setValue(int(baseline))
+        else:
+            self._is_null = False
+            self.setSuffix(self._display_suffix)
+            super().setValue(int(value))
+        self._syncing_null_state = False
+
+    def nullable_value(self) -> Optional[int]:
+        """Return None when the field is visually empty."""
+        return None if self._is_null else int(super().value())
+
+    def _on_text_edited(self, text: str) -> None:
+        self._is_null = text.strip() == ""
+
+    def _on_editing_finished(self) -> None:
+        if self.lineEdit().text().strip() == "":
+            self.set_nullable_value(None)
+        else:
+            self.interpretText()
+            self._is_null = False
+            self.setSuffix(self._display_suffix)
+
+    def _on_value_changed(self, _value: int) -> None:
+        if not self._syncing_null_state and self.lineEdit().text().strip():
+            self._is_null = False
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._is_null and self._should_prepare_for_typing(event):
+            self._prime_for_direct_input(0)
+        super().keyPressEvent(event)
+
+    def _should_prepare_for_typing(self, event: QKeyEvent) -> bool:
+        text = event.text()
+        return bool(text) and (text.isdigit() or (text == "-" and self._allow_negative_input))
+
+    def _prime_for_direct_input(self, seed_value: int) -> None:
+        self._syncing_null_state = True
+        self.setSuffix(self._display_suffix)
+        super().setValue(seed_value)
+        self.lineEdit().selectAll()
+        self._syncing_null_state = False
+        self._is_null = False
+
+    def stepBy(self, steps: int) -> None:
+        if self._is_null:
+            self._is_null = False
+            self.setSuffix(self._display_suffix)
+            super().setValue(self._input_min)
+        if self._allow_negative_input:
+            super().stepBy(steps)
+            return
+        target = max(self._input_min, int(super().value() + steps * self.singleStep()))
+        super().setValue(target)
+
+    def validate(self, text: str, pos: int):
+        if not self._allow_negative_input and text.strip().startswith("-"):
+            return QValidator.Invalid, text, pos
+        return super().validate(text, pos)
+
+    def textFromValue(self, value: int) -> str:
+        if self._is_null:
+            return ""
+        return super().textFromValue(value)
+
+    def set_display_suffix(self, suffix: str) -> None:
+        """Configure a suffix that is hidden while the field is null."""
+        self._display_suffix = suffix
+        if not self._is_null:
+            self.setSuffix(suffix)
+
+
+class NullableDoubleSpinBox(QDoubleSpinBox):
+    """QDoubleSpinBox with placeholder-style null state."""
+
+    def __init__(
+        self,
+        null_value: float = -1.0,
+        *,
+        input_min: float = 0.0,
+        allow_negative_input: bool = False,
+    ):
+        super().__init__()
+        self._null_value = null_value
+        self._input_min = input_min
+        self._allow_negative_input = allow_negative_input
+        self._display_suffix = ""
+        self._is_null = True
+        self._syncing_null_state = False
+
+        self.setSpecialValueText("")
+        self.lineEdit().setPlaceholderText("Не указано")
+        self.lineEdit().textEdited.connect(self._on_text_edited)
+        self.editingFinished.connect(self._on_editing_finished)
+        self.valueChanged.connect(self._on_value_changed)
+        self.set_nullable_value(None)
+
+    def set_nullable_value(self, value: Optional[float]) -> None:
+        """Set a nullable value; None keeps the field visually empty."""
+        self._syncing_null_state = True
+        if value is None:
+            self._is_null = True
+            self.setSuffix("")
+            baseline = self._null_value
+            if baseline < self.minimum() or baseline > self.maximum():
+                baseline = self._input_min
+            super().setValue(float(baseline))
+        else:
+            self._is_null = False
+            self.setSuffix(self._display_suffix)
+            super().setValue(float(value))
+        self._syncing_null_state = False
+
+    def nullable_value(self) -> Optional[float]:
+        """Return None when the field is visually empty."""
+        return None if self._is_null else float(super().value())
+
+    def _on_text_edited(self, text: str) -> None:
+        self._is_null = text.strip() == ""
+
+    def _on_editing_finished(self) -> None:
+        if self.lineEdit().text().strip() == "":
+            self.set_nullable_value(None)
+        else:
+            self.interpretText()
+            self._is_null = False
+            self.setSuffix(self._display_suffix)
+
+    def _on_value_changed(self, _value: float) -> None:
+        if not self._syncing_null_state and self.lineEdit().text().strip():
+            self._is_null = False
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._is_null and self._should_prepare_for_typing(event):
+            self._prime_for_direct_input(0.0)
+        super().keyPressEvent(event)
+
+    def _should_prepare_for_typing(self, event: QKeyEvent) -> bool:
+        text = event.text()
+        allowed_prefix = {"-", ".", ","} if self._allow_negative_input else {".", ","}
+        return bool(text) and (text.isdigit() or text in allowed_prefix)
+
+    def _prime_for_direct_input(self, seed_value: float) -> None:
+        self._syncing_null_state = True
+        self.setSuffix(self._display_suffix)
+        super().setValue(seed_value)
+        self.lineEdit().selectAll()
+        self._syncing_null_state = False
+        self._is_null = False
+
+    def stepBy(self, steps: int) -> None:
+        if self._is_null:
+            self._is_null = False
+            self.setSuffix(self._display_suffix)
+            super().setValue(self._input_min)
+        if self._allow_negative_input:
+            super().stepBy(steps)
+            return
+        target = max(self._input_min, float(super().value() + steps * self.singleStep()))
+        super().setValue(target)
+
+    def validate(self, text: str, pos: int):
+        if not self._allow_negative_input and text.strip().startswith("-"):
+            return QValidator.Invalid, text, pos
+        return super().validate(text, pos)
+
+    def textFromValue(self, value: float) -> str:
+        if self._is_null:
+            return ""
+        return super().textFromValue(value)
+
+    def set_display_suffix(self, suffix: str) -> None:
+        """Configure a suffix that is hidden while the field is null."""
+        self._display_suffix = suffix
+        if not self._is_null:
+            self.setSuffix(suffix)
 
 
 class PredictWorker(QThread):
@@ -84,6 +299,8 @@ class LPRPredictPage(QWidget):
         self.viewmodel = None
         self.predict_worker = None
         self.save_worker = None
+        self.input_schema = get_input_schema("online_tactical")
+        self.input_widgets: dict[str, QSpinBox | QDoubleSpinBox] = {}
 
         self._init_ui()
 
@@ -103,39 +320,14 @@ class LPRPredictPage(QWidget):
         input_group = QGroupBox("Входные параметры пожара (разделы 1-2)")
         input_layout = QFormLayout(input_group)
         input_layout.setSpacing(10)
+        self._build_input_widgets(input_layout)
 
-        # Пример полей (должны соответствовать признакам модели)
-        self.building_floors_spin = QSpinBox()
-        self.building_floors_spin.setRange(1, 100)
-        self.building_floors_spin.setValue(1)
-        input_layout.addRow("Этажность здания:", self.building_floors_spin)
-
-        self.fire_floor_spin = QSpinBox()
-        self.fire_floor_spin.setRange(1, 100)
-        self.fire_floor_spin.setValue(1)
-        input_layout.addRow("Этаж пожара:", self.fire_floor_spin)
-
-        self.distance_spin = QDoubleSpinBox()
-        self.distance_spin.setRange(0, 100)
-        self.distance_spin.setValue(1.0)
-        self.distance_spin.setSuffix(" км")
-        input_layout.addRow("Расстояние до станции:", self.distance_spin)
-
-        self.fatalities_spin = QSpinBox()
-        self.fatalities_spin.setRange(0, 100)
-        self.fatalities_spin.setValue(0)
-        input_layout.addRow("Погибшие:", self.fatalities_spin)
-
-        self.injuries_spin = QSpinBox()
-        self.injuries_spin.setRange(0, 500)
-        self.injuries_spin.setValue(0)
-        input_layout.addRow("Пострадавшие:", self.injuries_spin)
-
-        self.damage_spin = QDoubleSpinBox()
-        self.damage_spin.setRange(0, 1000000)
-        self.damage_spin.setValue(0)
-        self.damage_spin.setSuffix(" руб.")
-        input_layout.addRow("Прямой ущерб:", self.damage_spin)
+        self.input_hint = QLabel(
+            "Поля редактируются напрямую с клавиатуры. Значение «Не указано» оставляет поле пустым для модели."
+        )
+        self.input_hint.setWordWrap(True)
+        self.input_hint.setStyleSheet("font-size: 12px; color: #f0f0f0;")
+        input_layout.addRow("", self.input_hint)
 
         main_layout.addWidget(input_group)
 
@@ -170,15 +362,13 @@ class LPRPredictPage(QWidget):
             "Нажмите «Прогнозировать» для получения результата"
         )
         self.chart_placeholder.setAlignment(Qt.AlignCenter)
-        self.chart_placeholder.setStyleSheet(
-            "QLabel { background: #f5f5f5; padding: 20px; border-radius: 4px; }"
-        )
+        self.chart_placeholder.setStyleSheet(self._chart_empty_style())
         chart_layout.addWidget(self.chart_placeholder)
 
         # Индикатор уверенности
         self.confidence_label = QLabel("")
         self.confidence_label.setAlignment(Qt.AlignCenter)
-        self.confidence_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.confidence_label.setStyleSheet(self._confidence_label_style())
         chart_layout.addWidget(self.confidence_label)
 
         splitter.addWidget(chart_group)
@@ -227,6 +417,7 @@ class LPRPredictPage(QWidget):
         buttons_layout.setSpacing(10)
 
         self.save_btn = QPushButton("Сохранить решение")
+        self.save_btn.setEnabled(False)
         self.save_btn.setFixedHeight(40)
         self.save_btn.setStyleSheet("""
             QPushButton {
@@ -333,15 +524,8 @@ class LPRPredictPage(QWidget):
             QMessageBox.warning(self, "Предупреждение", "Workspace не открыт")
             return
 
-        # Собрать входные данные
-        input_data = {
-            "building_floors": self.building_floors_spin.value(),
-            "fire_floor": self.fire_floor_spin.value(),
-            "distance_to_station": self.distance_spin.value(),
-            "fatalities": self.fatalities_spin.value(),
-            "injuries": self.injuries_spin.value(),
-            "direct_damage": self.damage_spin.value()
-        }
+        # Собрать входные данные согласно production contract.
+        input_data = self._collect_input_data()
 
         # Установить в ViewModel
         for key, value in input_data.items():
@@ -375,10 +559,7 @@ class LPRPredictPage(QWidget):
             for rank, prob in zip(ranks, probs):
                 chart_text += f"{rank}: {prob:.1f}%\n"
             self.chart_placeholder.setText(chart_text)
-            self.chart_placeholder.setStyleSheet(
-                "QLabel { background: #e3f2fd; padding: 20px; "
-                "border-radius: 4px; font-size: 14px; }"
-            )
+            self.chart_placeholder.setStyleSheet(self._chart_result_style())
 
         self.confidence_label.setText(
             f"Уверенность: {confidence:.1f}%"
@@ -444,14 +625,108 @@ class LPRPredictPage(QWidget):
         if self.viewmodel:
             self.viewmodel.clear_input_data()
 
+        for field in self.input_schema:
+            widget = self.input_widgets[field["name"]]
+            widget.set_nullable_value(None)
         self.rank_combo.setCurrentIndex(0)
         self.comment_edit.clear()
         self.chart_placeholder.setText(
             "Нажмите «Прогнозировать» для получения результата"
         )
-        self.chart_placeholder.setStyleSheet(
-            "QLabel { background: #f5f5f5; padding: 20px; border-radius: 4px; }"
-        )
+        self.chart_placeholder.setStyleSheet(self._chart_empty_style())
         self.confidence_label.setText("")
         self.status_label.setText("")
         self.save_btn.setEnabled(False)
+
+    def _chart_empty_style(self) -> str:
+        """Style for the empty prediction area before any result is shown."""
+        return (
+            "QLabel {"
+            " background: #f2f2f2;"
+            " color: #444444;"
+            " padding: 20px;"
+            " border-radius: 4px;"
+            " border: 1px solid #b8b8b8;"
+            " font-size: 14px;"
+            " }"
+        )
+
+    def _chart_result_style(self) -> str:
+        """Style for prediction output with readable contrast."""
+        return (
+            "QLabel {"
+            " background: #ececec;"
+            " color: #1e1e1e;"
+            " padding: 20px;"
+            " border-radius: 4px;"
+            " border: 1px solid #b8b8b8;"
+            " font-size: 20px;"
+            " font-weight: 600;"
+            " }"
+        )
+
+    def _confidence_label_style(self) -> str:
+        """Style for confidence text under the probability block."""
+        return "font-size: 14px; font-weight: bold; color: #ffffff;"
+
+    def _build_input_widgets(self, layout: QFormLayout) -> None:
+        """Создать поля ввода из production input schema."""
+        for field in self.input_schema:
+            widget = self._create_widget_for_field(field)
+            self.input_widgets[field["name"]] = widget
+            layout.addRow(f"{field['label']}:", widget)
+
+    def _create_widget_for_field(
+        self,
+        field: Dict[str, Any],
+    ) -> NullableSpinBox | NullableDoubleSpinBox:
+        """Создать виджет для одного поля input schema."""
+        field_min = field.get("min", 0)
+        field_max = field.get("max", 1000000)
+        null_sentinel = field.get("null_sentinel", -1 if field.get("type") != "float" else -1.0)
+        allow_negative_input = field.get("allow_negative_input", field_min < 0)
+        effective_min = min(field_min, null_sentinel)
+
+        if field.get("type") == "float":
+            widget = NullableDoubleSpinBox(
+                null_sentinel,
+                input_min=float(field_min),
+                allow_negative_input=allow_negative_input,
+            )
+            widget.setDecimals(field.get("decimals", 2))
+            widget.setRange(float(effective_min), float(field_max))
+        else:
+            widget = NullableSpinBox(
+                int(null_sentinel),
+                input_min=int(field_min),
+                allow_negative_input=allow_negative_input,
+            )
+            widget.setRange(int(effective_min), int(field_max))
+        widget.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        widget.setAccelerated(True)
+        widget.setKeyboardTracking(False)
+        widget.setFrame(True)
+        widget.setMinimumWidth(220)
+        widget.set_display_suffix(field.get("suffix", ""))
+        widget.setAlignment(Qt.AlignLeft)
+        widget.setStyleSheet(
+            """
+            QSpinBox, QDoubleSpinBox {
+                padding: 6px 10px;
+                font-size: 14px;
+            }
+            """
+        )
+        line_edit = widget.lineEdit()
+        if line_edit is not None:
+            line_edit.setPlaceholderText("Не указано")
+            line_edit.setClearButtonEnabled(False)
+        return widget
+
+    def _collect_input_data(self) -> Dict[str, Any]:
+        """Собрать input payload, сохраняя unknown как None."""
+        payload: Dict[str, Any] = {}
+        for field in self.input_schema:
+            widget = self.input_widgets[field["name"]]
+            payload[field["name"]] = widget.nullable_value()
+        return payload

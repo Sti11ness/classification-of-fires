@@ -109,6 +109,10 @@ class ModelsPage(QWidget):
             from ...infra import ModelRegistry
             self.model_registry = ModelRegistry(models_path)
             self._load_models()
+        else:
+            self.model_registry = None
+            self.models_table.setRowCount(0)
+            self.info_text.clear()
 
     def _load_models(self) -> None:
         """Загрузить список моделей."""
@@ -173,6 +177,9 @@ class ModelsPage(QWidget):
             info_text += f"ID: {model_info.get('model_id', '')}\n"
             info_text += f"Тип: {model_info.get('model_type', '')}\n"
             info_text += f"Цель: {model_info.get('target', '')}\n"
+            info_text += f"Deployment role: {model_info.get('deployment_role', 'n/a')}\n"
+            info_text += f"Offline only: {model_info.get('offline_only', False)}\n"
+            info_text += f"Feature set: {model_info.get('feature_set', '')}\n"
             info_text += f"Создана: {model_info.get('created_at', '')}\n\n"
 
             info_text += "Метрики:\n"
@@ -215,7 +222,7 @@ class ModelsPage(QWidget):
             else:
                 QMessageBox.critical(
                     self, "Ошибка",
-                    "Не удалось активировать модель"
+                    "Не удалось активировать модель. Для rank_tz разрешены только production-safe модели."
                 )
 
     def _on_open_folder(self) -> None:

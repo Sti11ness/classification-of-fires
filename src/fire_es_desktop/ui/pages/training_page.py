@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 import json
+import sqlite3
 
 
 class TrainWorker(QThread):
@@ -71,6 +72,32 @@ class TrainingPage(QWidget):
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: white;")
         layout.addWidget(title)
 
+        source_group = QGroupBox("Источник данных")
+        source_layout = QGridLayout(source_group)
+        source_layout.setSpacing(10)
+
+        source_layout.addWidget(QLabel("Источник обучения:"), 0, 0)
+        self.source_kind_value = QLabel("Workspace database (fires)")
+        source_layout.addWidget(self.source_kind_value, 0, 1)
+
+        source_layout.addWidget(QLabel("База данных:"), 1, 0)
+        self.source_db_value = QLabel("Workspace не открыт")
+        self.source_db_value.setWordWrap(True)
+        source_layout.addWidget(self.source_db_value, 1, 1)
+
+        source_layout.addWidget(QLabel("Строк для обучения:"), 2, 0)
+        self.source_rows_value = QLabel("0")
+        source_layout.addWidget(self.source_rows_value, 2, 1)
+
+        self.source_hint = QLabel(
+            "Обучение запускается не из Excel-файла, а из таблицы fires текущего workspace."
+        )
+        self.source_hint.setWordWrap(True)
+        self.source_hint.setStyleSheet("font-size: 12px; color: #f0f0f0;")
+        source_layout.addWidget(self.source_hint, 3, 0, 1, 2)
+
+        layout.addWidget(source_group)
+
         # Параметры обучения
         params_group = QGroupBox("Параметры обучения")
         params_layout = QGridLayout(params_group)
@@ -79,7 +106,7 @@ class TrainingPage(QWidget):
         # Цель
         params_layout.addWidget(QLabel("Целевая переменная:"), 0, 0)
         self.target_combo = QComboBox()
-        self.target_combo.addItems(["rank_tz", "equipment_count", "nozzle_count"])
+        self.target_combo.addItems(["rank_tz"])
         params_layout.addWidget(self.target_combo, 0, 1)
 
         # Тип модели
@@ -94,8 +121,16 @@ class TrainingPage(QWidget):
         # Набор признаков
         params_layout.addWidget(QLabel("Набор признаков:"), 2, 0)
         self.feature_set_combo = QComboBox()
-        self.feature_set_combo.addItems(["basic", "extended", "custom"])
+        self.feature_set_combo.addItem("online_tactical (production)", "online_tactical")
+        self.feature_set_combo.addItem("extended (offline benchmark)", "extended")
+        self.feature_set_combo.addItem("enhanced_tactical (offline experiment)", "enhanced_tactical")
+        self.feature_set_combo.addItem("custom (offline only)", "custom")
         params_layout.addWidget(self.feature_set_combo, 2, 1)
+
+        self.feature_mode_hint = QLabel("")
+        self.feature_mode_hint.setWordWrap(True)
+        self.feature_mode_hint.setStyleSheet("font-size: 12px; color: #f0f0f0;")
+        params_layout.addWidget(self.feature_mode_hint, 2, 2, 3, 1)
 
         # Test size
         params_layout.addWidget(QLabel("Доля тестовой выборки:"), 3, 0)
@@ -159,11 +194,13 @@ class TrainingPage(QWidget):
         layout.addStretch()
 
         self._connect_signals()
+        self._update_feature_mode_hint()
 
     def _connect_signals(self) -> None:
         """Подключить сигналы."""
         self.train_btn.clicked.connect(self._on_train)
         self.activate_btn.clicked.connect(self._on_activate)
+        self.feature_set_combo.currentIndexChanged.connect(self._update_feature_mode_hint)
 
     def set_paths(self, db_path: Optional[Path],
                   models_path: Optional[Path]) -> None:
@@ -172,9 +209,12 @@ class TrainingPage(QWidget):
             from ...viewmodels import TrainModelViewModel
             self.viewmodel = TrainModelViewModel(db_path, models_path)
             self.train_btn.setEnabled(True)
+            self._update_source_info(db_path)
         else:
             self.viewmodel = None
             self.train_btn.setEnabled(False)
+            self.source_db_value.setText("Workspace не открыт")
+            self.source_rows_value.setText("0")
 
     def _on_train(self) -> None:
         """Запустить обучение."""
@@ -185,7 +225,7 @@ class TrainingPage(QWidget):
         # Установить параметры
         self.viewmodel.set_target(self.target_combo.currentText())
         self.viewmodel.set_model_type(self.model_type_combo.currentText())
-        self.viewmodel.set_feature_set(self.feature_set_combo.currentText())
+        self.viewmodel.set_feature_set(self.feature_set_combo.currentData())
         self.viewmodel.set_test_size(
             float(self.test_size_combo.currentText())
         )
@@ -219,7 +259,7 @@ class TrainingPage(QWidget):
         """Обучение завершено."""
         self.train_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.activate_btn.setEnabled(True)
+        self.activate_btn.setEnabled(bool(result.get("can_activate", False)))
         self._current_model_id = result.get("model_id")
 
         # Показать метрики
@@ -233,12 +273,26 @@ class TrainingPage(QWidget):
         self.results_text.append("=== Обучение завершено ===\n")
         self.results_text.append(f"Модель: {result.get('model_name', '')}\n")
         self.results_text.append(f"ID: {result.get('model_id', '')}\n")
+        if self.viewmodel:
+            self.results_text.append(f"Источник: {self.viewmodel.db_path}\n")
         self.results_text.append(f"Выборка: {result.get('samples', 0)} записей\n")
         self.results_text.append(f"Признаков: {len(result.get('feature_names', []))}\n\n")
         self.results_text.append("Метрики:\n")
         self.results_text.append(metrics_text)
-
-        self.results_text.append("\n✓ Модель сохранена и зарегистрирована")
+        self.results_text.append(
+            f"\nРоль deployment: {result.get('deployment_role', 'unknown')}"
+        )
+        if result.get("offline_only"):
+            self.results_text.append(
+                "\nℹ Модель сохранена как offline-only benchmark."
+                "\nОна использует исследовательский набор признаков и не совпадает с production-вводом экрана ЛПР,"
+                "\nпоэтому ее активация для оперативного прогноза заблокирована."
+            )
+        else:
+            self.results_text.append(
+                "\n✓ Модель использует production-safe набор признаков,"
+                "\nсовместима с экраном ЛПР и может быть активирована."
+            )
 
     def _on_error(self, message: str) -> None:
         """Ошибка обучения."""
@@ -261,5 +315,48 @@ class TrainingPage(QWidget):
         else:
             QMessageBox.critical(
                 self, "Ошибка",
-                "Не удалось активировать модель"
+                "Не удалось активировать модель. Для rank_tz разрешены только production-safe модели."
             )
+
+    def _update_feature_mode_hint(self) -> None:
+        """Пояснить текущий режим набора признаков."""
+        feature_set = self.feature_set_combo.currentData()
+        hints = {
+            "online_tactical": (
+                "Production: обучается на признаках, которые реально вводятся на экране ЛПР. "
+                "Такую модель можно активировать для рабочего прогноза."
+            ),
+            "extended": (
+                "Offline benchmark: использует расширенный набор признаков для сравнения качества. "
+                "Сохраняется для анализа, но не активируется для ЛПР."
+            ),
+            "enhanced_tactical": (
+                "Offline experiment: исследовательский режим с engineered features. "
+                "Нужен для экспериментов и сравнения, не для активации в ЛПР."
+            ),
+            "custom": (
+                "Offline only: произвольный набор признаков без гарантии совместимости с экраном ЛПР. "
+                "Для рабочего прогноза не активируется."
+            ),
+        }
+        self.feature_mode_hint.setText(hints.get(feature_set, ""))
+
+    def _update_source_info(self, db_path: Path) -> None:
+        """Показать, откуда именно берутся данные для обучения."""
+        self.source_db_value.setText(str(db_path))
+        labeled_rows = 0
+        conn = None
+        try:
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT COUNT(*) FROM fires WHERE rank_tz IS NOT NULL"
+            ).fetchone()
+            labeled_rows = int(row[0]) if row and row[0] is not None else 0
+        except Exception:
+            labeled_rows = 0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self.source_rows_value.setText(str(labeled_rows))

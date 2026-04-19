@@ -211,6 +211,101 @@ class DbRepository:
                 query = query.limit(limit)
             return query.all()
 
+    def get_lpr_decision_summaries(
+        self,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Получить список решений ЛПР для UI-таблицы."""
+        with self.get_session() as session:
+            query = (
+                session.query(LPRDecision, Fire)
+                .outerjoin(Fire, LPRDecision.fire_id == Fire.id)
+                .order_by(LPRDecision.created_at.desc(), LPRDecision.id.desc())
+            )
+            if limit:
+                query = query.limit(limit)
+
+            rows: List[Dict[str, Any]] = []
+            for decision, fire in query.all():
+                comment = decision.comment or ""
+                rows.append(
+                    {
+                        "decision_id": decision.id,
+                        "created_at": (
+                            decision.created_at.isoformat()
+                            if decision.created_at
+                            else None
+                        ),
+                        "decision_rank": decision.decision_rank,
+                        "predicted_rank": decision.predicted_rank,
+                        "comment_preview": (
+                            f"{comment[:77]}..." if len(comment) > 80 else comment
+                        ),
+                        "comment": comment,
+                        "fire_id": decision.fire_id,
+                        "fire_date": (
+                            fire.fire_date.isoformat()
+                            if fire and fire.fire_date
+                            else None
+                        ),
+                        "source_sheet": fire.source_sheet if fire else None,
+                    }
+                )
+            return rows
+
+    def get_lpr_decision_detail(self, decision_id: int) -> Optional[Dict[str, Any]]:
+        """Получить полную карточку решения ЛПР с привязанным пожаром."""
+        with self.get_session() as session:
+            row = (
+                session.query(LPRDecision, Fire)
+                .outerjoin(Fire, LPRDecision.fire_id == Fire.id)
+                .filter(LPRDecision.id == decision_id)
+                .first()
+            )
+            if not row:
+                return None
+
+            decision, fire = row
+            return {
+                "decision_id": decision.id,
+                "fire_id": decision.fire_id,
+                "decision_rank": decision.decision_rank,
+                "decision_resources": decision.decision_resources or {},
+                "predicted_rank": decision.predicted_rank,
+                "predicted_probabilities": decision.predicted_probabilities or [],
+                "comment": decision.comment or "",
+                "save_to_db": bool(decision.save_to_db),
+                "created_at": (
+                    decision.created_at.isoformat()
+                    if decision.created_at
+                    else None
+                ),
+                "fire_snapshot": fire.to_dict() if fire else None,
+            }
+
+    def update_lpr_decision(
+        self,
+        decision_id: int,
+        *,
+        decision_rank: Optional[float],
+        comment: str,
+    ) -> bool:
+        """Обновить редактируемую часть решения ЛПР."""
+        with self.get_session() as session:
+            decision = (
+                session.query(LPRDecision)
+                .filter(LPRDecision.id == decision_id)
+                .first()
+            )
+            if not decision:
+                return False
+
+            decision.decision_rank = decision_rank
+            decision.comment = comment
+            session.commit()
+            self.logger.info("Updated LPR decision: %s", decision_id)
+            return True
+
     def get_decisions_as_dataframe(self) -> pd.DataFrame:
         """Получить решения ЛПР как DataFrame."""
         with self.get_session() as session:

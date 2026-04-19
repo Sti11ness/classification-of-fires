@@ -116,10 +116,9 @@ class BatchPredictPage(QWidget):
         # Набор признаков
         self.feature_combo = QComboBox()
         self.feature_combo.addItems([
-            "online_tactical (13 признаков)",
-            "online_early (12 признаков)",
-            "online_dispatch (9 признаков)"
+            "online_tactical (production contract)"
         ])
+        self.feature_combo.setEnabled(False)
         params_layout.addRow("Набор признаков:", self.feature_combo)
 
         # Top-K
@@ -251,14 +250,7 @@ class BatchPredictPage(QWidget):
             "excel" if self.format_combo.currentIndex() == 0 else "csv"
         )
         
-        feature_map = {
-            0: "online_tactical",
-            1: "online_early",
-            2: "online_dispatch"
-        }
-        self.viewmodel.set_feature_set(
-            feature_map.get(self.feature_combo.currentIndex(), "online_tactical")
-        )
+        self.viewmodel.set_feature_set("online_tactical")
         
         self.viewmodel.set_top_k(self.top_k_spin.value())
         self.viewmodel.set_use_bootstrap(self.bootstrap_check.isChecked())

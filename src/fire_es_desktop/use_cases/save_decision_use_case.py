@@ -126,16 +126,75 @@ class SaveDecisionUseCase(BaseUseCase):
                 "fire_date": now,
                 "year": now.year,
                 "month": now.month,
-                "building_floors": self._to_int(input_data.get("building_floors")),
-                "fire_floor": self._to_int(input_data.get("fire_floor")),
-                "distance_to_station": self._to_float(input_data.get("distance_to_station")),
-                "fatalities": self._to_int(input_data.get("fatalities")),
-                "injuries": self._to_int(input_data.get("injuries")),
-                "direct_damage": self._to_float(input_data.get("direct_damage")),
                 "rank_tz": predicted_rank,
                 "created_at": now,
                 "updated_at": now,
             }
+            fire_columns = {column.name for column in Fire.__table__.columns}
+            int_like_fields = {
+                "row_id",
+                "region_code",
+                "year",
+                "month",
+                "settlement_type_code",
+                "fire_protection_code",
+                "risk_category_code",
+                "enterprise_type_code",
+                "fpo_class_code",
+                "building_floors",
+                "fire_floor",
+                "fire_resistance_code",
+                "source_item_code",
+                "fatalities",
+                "injuries",
+                "people_saved",
+                "people_evacuated",
+                "extinguishing_agents_code",
+                "initial_means_code",
+                "respirators_use_code",
+                "water_sources_code",
+                "alarm_type_code",
+            }
+            float_like_fields = {
+                "distance_to_station",
+                "direct_damage",
+                "direct_damage_log",
+                "assets_saved",
+                "t_detect_min",
+                "t_report_min",
+                "t_arrival_min",
+                "t_first_hose_min",
+                "t_contained_min",
+                "t_extinguished_min",
+                "equipment_count",
+                "nozzle_count",
+                "rank_tz",
+                "rank_distance",
+                "rank_ref",
+                "severity_score",
+            }
+            bool_like_fields = {
+                "flag_date_outlier",
+                "flag_floor_outlier",
+                "flag_distance_outlier",
+                "flag_floor_inconsistent",
+                "flag_negative_values",
+                "flag_damage_outlier",
+                "flag_time_invalid",
+                "flag_missing_outputs",
+            }
+
+            for key, value in input_data.items():
+                if key not in fire_columns:
+                    continue
+                if key in int_like_fields:
+                    fire_payload[key] = self._to_int(value)
+                elif key in float_like_fields:
+                    fire_payload[key] = self._to_float(value)
+                elif key in bool_like_fields:
+                    fire_payload[key] = bool(value) if value is not None else None
+                else:
+                    fire_payload[key] = value
 
             session = db.get_session()
             try:

@@ -71,10 +71,8 @@ class LogPage(QWidget):
         self.logs_table.setHorizontalHeaderLabels([
             "Время", "Уровень", "Источник", "Сообщение", "Данные"
         ])
-        self.logs_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.Stretch
-        )
         self.logs_table.setAlternatingRowColors(True)
+        self._configure_table_columns()
         logs_layout.addWidget(self.logs_table)
 
         # Кнопки
@@ -126,6 +124,10 @@ class LogPage(QWidget):
             from ...infra import LogStore
             self.log_store = LogStore(logs_path)
             self._load_logs()
+        else:
+            self.log_store = None
+            self.logs_table.setRowCount(0)
+            self.details_text.clear()
 
     def _load_logs(self) -> None:
         """Загрузить журнал."""
@@ -133,6 +135,7 @@ class LogPage(QWidget):
             return
 
         self.logs_table.setRowCount(0)
+        self._configure_table_columns()
 
         # Получить уровень фильтра
         level_filter = self.level_combo.currentText()
@@ -175,7 +178,17 @@ class LogPage(QWidget):
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             self.logs_table.setItem(row, 4, item)
 
-        self.logs_table.resizeColumnsToContents()
+        self.logs_table.resizeRowsToContents()
+
+    def _configure_table_columns(self) -> None:
+        """Зафиксировать стабильную геометрию колонок журнала."""
+        header = self.logs_table.horizontalHeader()
+        header.setMinimumSectionSize(80)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
 
     def _on_cell_clicked(self, row: int, col: int) -> None:
         """Клик по ячейке."""

@@ -29,12 +29,22 @@ from .pages import (
     ImportPage,
     TrainingPage,
     LPRPredictPage,
+    LPRDecisionHistoryPage,
     ModelsPage,
     LogPage,
     BatchPredictPage
 )
 
 logger = logging.getLogger("MainWindow")
+
+PAGE_PROJECT = "project"
+PAGE_IMPORT = "import"
+PAGE_TRAINING = "training"
+PAGE_BATCH_PREDICT = "batch_predict"
+PAGE_LPR_PREDICT = "lpr_predict"
+PAGE_LPR_HISTORY = "lpr_history"
+PAGE_MODELS = "models"
+PAGE_LOG = "log"
 
 
 class NavigationList(QListWidget):
@@ -203,7 +213,8 @@ class MainWindow(QMainWindow):
     def __init__(self, role: str = "analyst"):
         super().__init__()
         self.role = role  # "analyst" или "lpr"
-        self._nav_page_indices: list[int] = []
+        self._nav_page_keys: list[str] = []
+        self.page_indices: Dict[str, int] = {}
         self.project_vm = ProjectViewModel()
 
         self.setWindowTitle("Fire ES — Экспертная система классификации пожаров")
@@ -249,31 +260,39 @@ class MainWindow(QMainWindow):
         """Создать страницы."""
         # Страница проекта
         self.project_page = ProjectPage(self.project_vm)
-        self.pages_stack.addWidget(self.project_page)
+        self._register_page(PAGE_PROJECT, self.project_page)
 
         # Страница импорта
         self.import_page = ImportPage()
-        self.pages_stack.addWidget(self.import_page)
+        self._register_page(PAGE_IMPORT, self.import_page)
 
         # Страница обучения
         self.training_page = TrainingPage()
-        self.pages_stack.addWidget(self.training_page)
+        self._register_page(PAGE_TRAINING, self.training_page)
 
         # Страница пакетного прогноза
         self.batch_predict_page = BatchPredictPage()
-        self.pages_stack.addWidget(self.batch_predict_page)
+        self._register_page(PAGE_BATCH_PREDICT, self.batch_predict_page)
 
         # Страница прогноза ЛПР
         self.lpr_page = LPRPredictPage()
-        self.pages_stack.addWidget(self.lpr_page)
+        self._register_page(PAGE_LPR_PREDICT, self.lpr_page)
+
+        # История решений ЛПР
+        self.lpr_history_page = LPRDecisionHistoryPage()
+        self._register_page(PAGE_LPR_HISTORY, self.lpr_history_page)
 
         # Страница моделей
         self.models_page = ModelsPage()
-        self.pages_stack.addWidget(self.models_page)
+        self._register_page(PAGE_MODELS, self.models_page)
 
         # Страница журнала
         self.log_page = LogPage()
-        self.pages_stack.addWidget(self.log_page)
+        self._register_page(PAGE_LOG, self.log_page)
+
+    def _register_page(self, page_key: str, widget: QWidget) -> None:
+        """Зарегистрировать страницу и сохранить ее индекс в stacked widget."""
+        self.page_indices[page_key] = self.pages_stack.addWidget(widget)
 
     def _connect_signals(self) -> None:
         """Подключить сигналы."""
@@ -300,31 +319,15 @@ class MainWindow(QMainWindow):
                 role=self.role,
                 stats=stats
             )
+        else:
+            self.context_panel.update_context(
+                workspace_path=None,
+                model_info=None,
+                role=self.role,
+                stats=None,
+            )
 
-            # Обновить страницы
-            self.import_page.set_db_path(self.project_vm.get_db_path())
-            self.training_page.set_paths(
-                db_path=self.project_vm.get_db_path(),
-                models_path=self.project_vm.get_reports_path() / "models"
-                if self.project_vm.get_reports_path() else None
-            )
-            self.batch_predict_page.set_paths(
-                db_path=self.project_vm.get_db_path(),
-                models_path=self.project_vm.get_reports_path() / "models"
-                if self.project_vm.get_reports_path() else None,
-                reports_path=self.project_vm.get_reports_path()
-                if self.project_vm.get_reports_path() else None
-            )
-            self.lpr_page.set_paths(
-                db_path=self.project_vm.get_db_path(),
-                models_path=self.project_vm.get_reports_path() / "models"
-                if self.project_vm.get_reports_path() else None
-            )
-            self.models_page.set_models_path(
-                self.project_vm.get_reports_path() / "models"
-                if self.project_vm.get_reports_path() else None
-            )
-            self.log_page.set_logs_path(self.project_vm.get_logs_path())
+        self._propagate_workspace_state()
 
     def _on_error(self, message: str) -> None:
         """Обработчик ошибки."""
@@ -336,26 +339,29 @@ class MainWindow(QMainWindow):
 
         if self.role == "analyst":
             items = [
-                ("Проект", 0),
-                ("Импорт данных", 1),
-                ("Обучение модели", 2),
-                ("Пакетный прогноз", 3),
-                ("Прогноз (ЛПР)", 4),
-                ("Модели", 5),
-                ("Журнал", 6)
+                ("Проект", PAGE_PROJECT),
+                ("Импорт данных", PAGE_IMPORT),
+                ("Обучение модели", PAGE_TRAINING),
+                ("Пакетный прогноз", PAGE_BATCH_PREDICT),
+                ("Прогноз (ЛПР)", PAGE_LPR_PREDICT),
+                ("История решений ЛПР", PAGE_LPR_HISTORY),
+                ("Модели", PAGE_MODELS),
+                ("Журнал", PAGE_LOG),
             ]
         else:  # lpr
             items = [
-                ("Прогноз (ЛПР)", 4),
-                ("Журнал", 6)
+                ("Проект", PAGE_PROJECT),
+                ("Прогноз (ЛПР)", PAGE_LPR_PREDICT),
+                ("История решений ЛПР", PAGE_LPR_HISTORY),
+                ("Журнал", PAGE_LOG),
             ]
 
-        self._nav_page_indices = [page_index for _, page_index in items]
+        self._nav_page_keys = [page_key for _, page_key in items]
 
-        for text, page_index in items:
+        for text, page_key in items:
             item = QListWidgetItem(text)
             item.setSizeHint(QSize(200, 40))
-            item.setData(Qt.UserRole, page_index)
+            item.setData(Qt.UserRole, page_key)
             self.navigation.addItem(item)
 
         self.context_panel.set_role(self.role)
@@ -363,9 +369,10 @@ class MainWindow(QMainWindow):
 
     def _on_navigation_changed(self, row: int) -> None:
         """Переключить страницу по карте навигации."""
-        if row < 0 or row >= len(self._nav_page_indices):
+        if row < 0 or row >= len(self._nav_page_keys):
             return
-        self.pages_stack.setCurrentIndex(self._nav_page_indices[row])
+        page_key = self._nav_page_keys[row]
+        self.pages_stack.setCurrentIndex(self.page_indices[page_key])
 
     def _on_role_changed(self, role: str) -> None:
         """Переключить режим приложения без перезапуска."""
@@ -384,12 +391,36 @@ class MainWindow(QMainWindow):
 
     def _show_log_page(self) -> None:
         """Показать страницу журнала."""
-        log_page_index = 6
-        if log_page_index not in self._nav_page_indices:
+        if PAGE_LOG not in self._nav_page_keys:
             QMessageBox.information(self, "Журнал", "Журнал недоступен в этом режиме")
             return
-        nav_row = self._nav_page_indices.index(log_page_index)
+        nav_row = self._nav_page_keys.index(PAGE_LOG)
         self.navigation.setCurrentRow(nav_row)
+
+    def _propagate_workspace_state(self) -> None:
+        """Передать текущие workspace-зависимости во все страницы."""
+        db_path = self.project_vm.get_db_path()
+        reports_path = self.project_vm.get_reports_path()
+        models_path = reports_path / "models" if reports_path else None
+        logs_path = self.project_vm.get_logs_path()
+
+        self.import_page.set_db_path(db_path)
+        self.training_page.set_paths(
+            db_path=db_path,
+            models_path=models_path,
+        )
+        self.batch_predict_page.set_paths(
+            db_path=db_path,
+            models_path=models_path,
+            reports_path=reports_path,
+        )
+        self.lpr_page.set_paths(
+            db_path=db_path,
+            models_path=models_path,
+        )
+        self.lpr_history_page.set_db_path(db_path)
+        self.models_page.set_models_path(models_path)
+        self.log_page.set_logs_path(logs_path)
 
     def closeEvent(self, event) -> None:
         """Обработчик закрытия окна."""
