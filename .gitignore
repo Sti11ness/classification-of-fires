@@ -57,3 +57,5 @@ WS/
 .windsurfrules
 DOCS/
 *.md
+!docs/
+!docs/TECHNICAL_README.md
