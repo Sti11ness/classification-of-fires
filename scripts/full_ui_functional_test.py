@@ -7,6 +7,7 @@
 - Обучение модели (обучить + активация)
 - Модели (обновить/выбрать/активировать/открыть папку)
 - Прогноз ЛПР (ввод, прогноз, выбор ранга, сохранение, отмена)
+- История решений ЛПР (просмотр, детали, редактирование)
 - Пакетный прогноз (выбор файла, запуск, экспорт)
 - Журнал (фильтр, refresh, export, open log)
 - Переключение ролей analyst/lpr в контекстной панели
@@ -161,6 +162,17 @@ def find_button_by_text(root, text: str) -> QPushButton:
     raise AssertionError(f"Кнопка не найдена: '{text}'")
 
 
+def navigate_to(win: MainWindow, app: QApplication, text: str) -> None:
+    for row in range(win.navigation.count()):
+        item = win.navigation.item(row)
+        if item and item.text() == text:
+            win.navigation.setCurrentRow(row)
+            app.processEvents()
+            QTest.qWait(80)
+            return
+    raise AssertionError(f"Пункт навигации не найден: '{text}'")
+
+
 def create_batch_input(ctx: UiTestContext, db_path: Path) -> None:
     cols = FEATURE_SETS["online_tactical"]
     query = f"SELECT {', '.join(cols)} FROM fires LIMIT 30"
@@ -253,7 +265,7 @@ def run_full_ui_test(ctx: UiTestContext) -> Tuple[bool, List[UiTestResult], str]
             raise AssertionError("TrainingPage ViewModel не инициализирован")
         training_page.target_combo.setCurrentText("rank_tz")
         training_page.model_type_combo.setCurrentText("random_forest")
-        training_page.feature_set_combo.setCurrentText("basic")
+        training_page.feature_set_combo.setCurrentIndex(0)
         training_page.test_size_combo.setCurrentText("0.2")
         training_page.class_weight_combo.setCurrentText("balanced")
 
@@ -263,10 +275,20 @@ def run_full_ui_test(ctx: UiTestContext) -> Tuple[bool, List[UiTestResult], str]
             lambda: training_page.worker is not None and not training_page.worker.isRunning(),
             timeout_ms=480000,
         )
+        wait_until(
+            app,
+            lambda: "Обучение завершено" in training_page.results_text.toPlainText(),
+            timeout_ms=10000,
+        )
         if "Обучение завершено" not in training_page.results_text.toPlainText():
             raise AssertionError("Обучение не завершилось успешно")
 
         stage("Training activate")
+        wait_until(
+            app,
+            lambda: training_page.activate_btn.isEnabled() and hasattr(training_page, "_current_model_id"),
+            timeout_ms=10000,
+        )
         click(app, training_page.activate_btn)
         active_model_id = training_page.viewmodel.get_active_model_id()
         if not active_model_id:
@@ -290,12 +312,25 @@ def run_full_ui_test(ctx: UiTestContext) -> Tuple[bool, List[UiTestResult], str]
         # 5. ЛПР: predict/save/cancel
         stage("LPR predict/save/cancel")
         lpr_page = win.lpr_page
-        lpr_page.building_floors_spin.setValue(9)
-        lpr_page.fire_floor_spin.setValue(3)
-        lpr_page.distance_spin.setValue(2.5)
-        lpr_page.fatalities_spin.setValue(0)
-        lpr_page.injuries_spin.setValue(1)
-        lpr_page.damage_spin.setValue(15000)
+        initial_comment = "Auto UI full test"
+        updated_comment = "Auto UI full test updated"
+        lpr_inputs = {
+            "region_code": 77,
+            "settlement_type_code": 1,
+            "fire_protection_code": 2,
+            "enterprise_type_code": 11,
+            "building_floors": 9,
+            "fire_floor": 3,
+            "fire_resistance_code": 2,
+            "source_item_code": 12,
+            "distance_to_station": 2.5,
+            "t_detect_min": 15,
+            "t_report_min": 25,
+            "t_arrival_min": 35,
+            "t_first_hose_min": 45,
+        }
+        for field_name, value in lpr_inputs.items():
+            lpr_page.input_widgets[field_name].setValue(value)
 
         click(app, lpr_page.predict_btn)
         wait_until(
@@ -309,7 +344,7 @@ def run_full_ui_test(ctx: UiTestContext) -> Tuple[bool, List[UiTestResult], str]
             raise AssertionError("После прогноза не заполнена метка уверенности")
 
         lpr_page.rank_combo.setCurrentText("2")
-        lpr_page.comment_edit.setPlainText("Auto UI full test")
+        lpr_page.comment_edit.setPlainText(initial_comment)
         click(app, lpr_page.save_btn)
         wait_until(
             app,
@@ -319,12 +354,51 @@ def run_full_ui_test(ctx: UiTestContext) -> Tuple[bool, List[UiTestResult], str]
         if "сохран" not in lpr_page.status_label.text().lower():
             raise AssertionError(f"Решение ЛПР не сохранено: '{lpr_page.status_label.text()}'")
 
+        # 6. История решений ЛПР: refresh/select/edit
+        stage("LPR history view/edit")
+        navigate_to(win, app, "История решений ЛПР")
+        history_page = win.lpr_history_page
+        click(app, history_page.refresh_btn)
+        if history_page.decisions_table.rowCount() == 0:
+            raise AssertionError("История решений ЛПР пуста после сохранения решения")
+
+        history_page.decisions_table.selectRow(0)
+        history_page._on_table_selection_changed()
+        app.processEvents()
+        QTest.qWait(100)
+
+        if history_page.decision_id_value.text() == "—":
+            raise AssertionError("Карточка решения не открылась после выбора строки")
+        if initial_comment not in history_page.comment_edit.toPlainText():
+            raise AssertionError("В истории решений не найден только что сохраненный комментарий")
+        if not history_page.probabilities_text.toPlainText().strip():
+            raise AssertionError("В истории решений не отображаются вероятности top-k")
+        if not history_page.input_snapshot_text.toPlainText().strip():
+            raise AssertionError("В истории решений не отображаются входные данные кейса")
+
+        history_page.decision_rank_combo.setCurrentText("3")
+        history_page.comment_edit.setPlainText(updated_comment)
+        click(app, history_page.save_btn)
+        click(app, history_page.refresh_btn)
+        history_page.decisions_table.selectRow(0)
+        history_page._on_table_selection_changed()
+        app.processEvents()
+        QTest.qWait(100)
+
+        if history_page.decision_rank_combo.currentText() != "3":
+            raise AssertionError("Измененный ранг не сохранился в истории решений")
+        if history_page.comment_edit.toPlainText() != updated_comment:
+            raise AssertionError("Измененный комментарий не сохранился в истории решений")
+        results.append(UiTestResult("LPR history: view + edit + persist", True))
+
+        navigate_to(win, app, "Прогноз (ЛПР)")
+
         click(app, lpr_page.cancel_btn)
         if lpr_page.rank_combo.currentText() != "Не выбрано":
             raise AssertionError("Кнопка 'Отмена' не сбрасывает выбранный ранг")
         results.append(UiTestResult("LPR: predict + save + cancel", True))
 
-        # 6. Batch predict: select/start/result
+        # 7. Batch predict: select/start/result
         stage("Batch predict")
         db_path = win.project_vm.get_db_path()
         if not db_path:
@@ -358,7 +432,7 @@ def run_full_ui_test(ctx: UiTestContext) -> Tuple[bool, List[UiTestResult], str]
             )
         results.append(UiTestResult("Batch predict: select + run + export", True))
 
-        # 7. Журнал: refresh/filter/export/open-log
+        # 8. Журнал: refresh/filter/export/open-log
         stage("Log page")
         log_page = win.log_page
         if log_page.log_store:
@@ -380,23 +454,29 @@ def run_full_ui_test(ctx: UiTestContext) -> Tuple[bool, List[UiTestResult], str]
         click(app, log_page.open_log_btn)
         results.append(UiTestResult("Log: filter + refresh + export + open", True))
 
-        # 8. Переключение ролей и кнопка журнала в статусбаре
+        # 9. Переключение ролей и кнопка журнала в статусбаре
         stage("Role switch + status log")
         role_combo = win.context_panel.role_combo
         role_combo.setCurrentIndex(role_combo.findData("lpr"))
         app.processEvents()
         QTest.qWait(120)
-        if win.role != "lpr" or win.navigation.count() != 2:
+        lpr_nav = [win.navigation.item(i).text() for i in range(win.navigation.count())]
+        if win.role != "lpr" or win.navigation.count() != 4:
             raise AssertionError("Переключение в режим lpr не обновило навигацию")
+        if lpr_nav != ["Проект", "Прогноз (ЛПР)", "История решений ЛПР", "Журнал"]:
+            raise AssertionError(f"Некорректная навигация lpr: {lpr_nav}")
 
         role_combo.setCurrentIndex(role_combo.findData("analyst"))
         app.processEvents()
         QTest.qWait(120)
-        if win.role != "analyst" or win.navigation.count() < 7:
+        analyst_nav = [win.navigation.item(i).text() for i in range(win.navigation.count())]
+        if win.role != "analyst" or win.navigation.count() < 8:
             raise AssertionError("Переключение в режим analyst не обновило навигацию")
+        if "История решений ЛПР" not in analyst_nav:
+            raise AssertionError("В режиме analyst отсутствует страница истории решений ЛПР")
 
         click(app, win.status_bar.log_button)
-        if win.pages_stack.currentIndex() != 6:
+        if win.pages_stack.currentIndex() != win.page_indices["log"]:
             raise AssertionError("Кнопка 'Журнал' в статусбаре не открыла страницу журнала")
         results.append(UiTestResult("Main window: role switch + status log button", True))
 
@@ -434,7 +514,7 @@ def write_report(
         f"- Workspace: `{ctx.workspace_path}`",
         "",
         "## Что сделано",
-        "- Автоматически пройдены разделы: Проект, Импорт, Обучение, Модели, ЛПР, Пакетный прогноз, Журнал, переключение ролей.",
+        "- Автоматически пройдены разделы: Проект, Импорт, Обучение, Модели, ЛПР, История решений ЛПР, Пакетный прогноз, Журнал, переключение ролей.",
         "- Протестированы клики по ключевым кнопкам и заполнение всех основных полей ввода на страницах.",
         "- Проверены фоновые операции (импорт/обучение/прогноз/сохранение) до завершения.",
         "",
