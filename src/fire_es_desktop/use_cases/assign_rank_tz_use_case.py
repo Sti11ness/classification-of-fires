@@ -5,6 +5,7 @@ AssignRankTzUseCase — explicit canonical rank labeling.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "fire_es"))
 
 from fire_es.db import DatabaseManager, Fire
+from fire_es.equipment_parse import build_unparsed_equipment_report
 from fire_es.ranking import assign_rank_tz
 from fire_es.rank_tz_contract import (
     LABEL_SOURCE_HISTORICAL_VECTOR,
@@ -46,6 +48,7 @@ class AssignRankTzUseCase(BaseUseCase):
         *,
         target_definition: str = SEMANTIC_TARGET_RANK_TZ_VECTOR,
         batch_size: int = 500,
+        override_human_verified: bool = False,
     ) -> UseCaseResult:
         self.status = UseCaseStatus.RUNNING
         self._cancel_requested = False
@@ -64,15 +67,31 @@ class AssignRankTzUseCase(BaseUseCase):
                 db.close()
                 return UseCaseResult(success=False, message="Нет данных в БД", warnings=warnings)
 
+            human_verified_mask = df.get("human_verified", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+            lpr_decision_mask = (
+                df.get("rank_label_source", pd.Series(index=df.index, dtype=object)).fillna("").eq("lpr_decision")
+            )
+            protected_mask = human_verified_mask | lpr_decision_mask
+            human_verified_skipped_count = int(human_verified_mask.sum())
+            lpr_decision_skipped_count = int(lpr_decision_mask.sum())
+            overridden_count = 0
+            if protected_mask.any() and not override_human_verified:
+                candidate_df = df.loc[~protected_mask].copy()
+            else:
+                candidate_df = df.copy()
+                if protected_mask.any() and override_human_verified:
+                    overridden_count = int(protected_mask.sum())
+                    warnings.append("Override enabled: human-verified labels may be recalculated")
+
             self.report_progress(2, 4, "Расчет рангов")
             self.check_cancelled()
 
             if target_definition == SEMANTIC_TARGET_RANK_TZ_VECTOR:
-                labeled = assign_rank_tz(df, target_definition="vector")
+                labeled = assign_rank_tz(candidate_df, target_definition="vector")
                 label_column = "rank_tz_vector"
                 label_source = LABEL_SOURCE_HISTORICAL_VECTOR
             elif target_definition == SEMANTIC_TARGET_RANK_TZ_COUNT_PROXY:
-                labeled = assign_rank_tz(df, target_definition="count_proxy")
+                labeled = assign_rank_tz(candidate_df, target_definition="count_proxy")
                 label_column = "rank_tz_count_proxy"
                 label_source = LABEL_SOURCE_PROXY_BOOTSTRAP
                 warnings.append("Используется auxiliary count proxy, а не canonical vector target")
@@ -83,8 +102,13 @@ class AssignRankTzUseCase(BaseUseCase):
                     warnings=warnings,
                 )
 
-            rank_distribution = labeled[label_column].value_counts(dropna=False).to_dict()
-            null_count = int(labeled[label_column].isna().sum())
+            rank_distribution = labeled[label_column].value_counts(dropna=False).to_dict() if not labeled.empty else {}
+            null_count = int(labeled[label_column].isna().sum()) if not labeled.empty else 0
+            unparsed_equipment_report = (
+                build_unparsed_equipment_report(candidate_df)
+                if target_definition == SEMANTIC_TARGET_RANK_TZ_VECTOR and not candidate_df.empty and "equipment" in candidate_df.columns
+                else pd.DataFrame()
+            )
 
             self.report_progress(3, 4, "Запись рангов в БД")
             self.check_cancelled()
@@ -126,6 +150,14 @@ class AssignRankTzUseCase(BaseUseCase):
                     "rank_distribution": rank_distribution,
                     "null_count": null_count,
                     "semantic_target": target_definition,
+                    "human_verified_skipped_count": human_verified_skipped_count,
+                    "lpr_decision_skipped_count": lpr_decision_skipped_count,
+                    "overridden_count": overridden_count,
+                    "top_unparsed_equipment_formats": (
+                        unparsed_equipment_report.to_dict(orient="records")
+                        if not unparsed_equipment_report.empty
+                        else []
+                    ),
                 },
                 warnings=warnings,
             )

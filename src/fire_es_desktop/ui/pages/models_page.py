@@ -177,9 +177,15 @@ class ModelsPage(QWidget):
             info_text += f"ID: {model_info.get('model_id', '')}\n"
             info_text += f"Тип: {model_info.get('model_type', '')}\n"
             info_text += f"Цель: {model_info.get('target', '')}\n"
+            info_text += f"Semantic target: {model_info.get('semantic_target', '')}\n"
+            info_text += f"Availability stage: {model_info.get('availability_stage', '')}\n"
             info_text += f"Deployment role: {model_info.get('deployment_role', 'n/a')}\n"
             info_text += f"Offline only: {model_info.get('offline_only', False)}\n"
             info_text += f"Feature set: {model_info.get('feature_set', '')}\n"
+            info_text += f"Split protocol: {model_info.get('split_protocol', '')}\n"
+            info_text += f"Event overlap rate: {model_info.get('event_overlap_rate', 'n/a')}\n"
+            info_text += f"Normative version: {model_info.get('normative_version', 'n/a')}\n"
+            info_text += f"Forbidden feature check: {model_info.get('forbidden_feature_check_passed', 'n/a')}\n"
             info_text += f"Создана: {model_info.get('created_at', '')}\n\n"
 
             info_text += "Метрики:\n"
@@ -191,6 +197,14 @@ class ModelsPage(QWidget):
 
             info_text += f"\nПризнаков: {len(model_info.get('features', []))}\n"
             info_text += f"Выборка: {model_info.get('dataset_info', {}).get('samples', 0)}\n"
+            warnings = []
+            if model_info.get("feature_set") == "online_tactical":
+                warnings.append("legacy feature set")
+            if model_info.get("event_overlap_rate", 0.0) not in (0, 0.0):
+                warnings.append("non-zero event overlap")
+            if model_info.get("semantic_target") != "rank_tz_vector":
+                warnings.append("non-canonical semantic target")
+            info_text += f"Warnings: {', '.join(warnings) if warnings else 'none'}\n"
 
             self.info_text.setText(info_text)
 

@@ -11,9 +11,10 @@ import numpy as np
 import pandas as pd
 
 from .equipment_parse import (
+    analyze_equipment_parse,
     build_resource_vector,
     normalize_vector,
-    parse_equipment_field,
+    process_equipment_column,
 )
 from .normatives import (
     get_normative_resource_vectors,
@@ -101,28 +102,52 @@ def assign_rank_tz(
     normative_payload = load_rank_resource_normatives()
     normative_version = normative_payload["normative_version"]
     quality_flags: list[list[str]] = [[] for _ in range(len(result))]
+    canonical_flags = (
+        result["is_canonical_event_record"].fillna(True).astype(bool)
+        if "is_canonical_event_record" in result.columns
+        else pd.Series(True, index=result.index)
+    )
 
     if target_definition == "vector":
-        if equipment_col in result.columns:
-            parsed_vectors = result[equipment_col].apply(parse_equipment_field)
-        elif "equipment_vector" in result.columns:
-            parsed_vectors = result["equipment_vector"]
-        else:
-            parsed_vectors = pd.Series([{} for _ in range(len(result))], index=result.index)
+        if "equipment_vector" not in result.columns:
+            result = process_equipment_column(result, equipment_col=equipment_col)
+        analyses = [
+            analyze_equipment_parse(
+                row.get(equipment_col),
+                declared_count=row.get(equipment_count_col),
+            )
+            for _, row in result.iterrows()
+        ]
+        assigned_ranks: list[Optional[float]] = []
+        assigned_distances: list[Optional[float]] = []
+        usable_flags: list[bool] = []
+        for idx, analysis in enumerate(analyses):
+            flags = list(analysis["resource_parse_flags"])
+            if "missing_or_unparsed_resources" in flags or "partially_unparsed_resources" in flags:
+                assigned_ranks.append(None)
+                assigned_distances.append(None)
+                usable_flags.append(False)
+            else:
+                rank, distance = calculate_rank_by_vector(build_resource_vector(analysis["equipment_vector"]))
+                assigned_ranks.append(rank)
+                assigned_distances.append(distance)
+                usable_flags.append("resource_parse_conflict" not in flags and rank is not None)
+            quality_flags[idx].extend(flags)
 
-        assigned = parsed_vectors.apply(lambda value: calculate_rank_by_vector(build_resource_vector(value)))
-        result["rank_tz_vector"] = assigned.apply(lambda value: value[0])
-        result["rank_distance"] = assigned.apply(lambda value: value[1])
+        result["rank_tz_vector"] = assigned_ranks
+        result["rank_distance"] = assigned_distances
         result["rank_tz"] = result["rank_tz_vector"]
-        result["rank_label_source"] = np.where(
-            result["rank_tz_vector"].notna(),
-            LABEL_SOURCE_HISTORICAL_VECTOR,
-            None,
-        )
-        for idx, vector in enumerate(parsed_vectors.tolist()):
-            if not vector:
-                quality_flags[idx].append("missing_resources")
-        result["usable_for_training"] = result.get("is_canonical_event_record", True) & result["rank_tz"].notna()
+        result["rank_label_source"] = np.where(result["rank_tz_vector"].notna(), LABEL_SOURCE_HISTORICAL_VECTOR, None)
+        result["resource_parse_confidence"] = [item["resource_parse_confidence"] for item in analyses]
+        result["resource_parse_flags"] = [
+            json.dumps(item["resource_parse_flags"], ensure_ascii=False) if item["resource_parse_flags"] else None
+            for item in analyses
+        ]
+        result["resource_vector_sum"] = [item["resource_vector_sum"] for item in analyses]
+        result["resource_count_declared"] = [item["resource_count_declared"] for item in analyses]
+        result["resource_count_parsed"] = [item["resource_count_parsed"] for item in analyses]
+        result["resource_count_conflict"] = [item["resource_count_conflict"] for item in analyses]
+        result["usable_for_training"] = canonical_flags & pd.Series(usable_flags, index=result.index)
     elif target_definition == "count_proxy":
         assigned = result[equipment_count_col].apply(calculate_rank_by_count)
         result["rank_tz_count_proxy"] = assigned.apply(lambda value: value[0])
@@ -136,7 +161,7 @@ def assign_rank_tz(
         for idx, value in enumerate(result[equipment_count_col].tolist()):
             if pd.isna(value) or value is None or float(value) < 1:
                 quality_flags[idx].append("missing_resources")
-        result["usable_for_training"] = result.get("is_canonical_event_record", True) & result["rank_tz"].notna()
+        result["usable_for_training"] = canonical_flags & result["rank_tz"].notna()
     else:
         raise ValueError(f"Unknown target_definition: {target_definition}")
 

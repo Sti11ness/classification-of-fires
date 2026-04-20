@@ -125,6 +125,62 @@ def parse_equipment_field(value: Any) -> dict[str, int]:
     return result
 
 
+def analyze_equipment_parse(
+    value: Any,
+    *,
+    declared_count: Any = None,
+) -> dict[str, Any]:
+    """Parse equipment and return quality metadata for canonical vector labeling."""
+    value_str = "" if pd.isna(value) or value is None else str(value).strip()
+    if not value_str:
+        return {
+            "equipment_vector": {},
+            "resource_parse_confidence": 0.0,
+            "resource_parse_flags": ["missing_or_unparsed_resources"],
+            "resource_vector_sum": 0,
+            "resource_count_declared": None if pd.isna(declared_count) else float(declared_count),
+            "resource_count_parsed": 0,
+            "resource_count_conflict": None,
+            "raw_equipment": value,
+        }
+
+    parts = [token.strip() for token in re.split(r"[,;]", value_str) if token.strip()]
+    parsed = parse_equipment_field(value)
+    parsed_count = int(sum(parsed.values()))
+    recognized_ratio = float(parsed_count / len(parts)) if parts else 0.0
+    flags: list[str] = []
+    if parsed_count == 0:
+        flags.append("missing_or_unparsed_resources")
+    elif recognized_ratio < 1.0:
+        flags.append("partially_unparsed_resources")
+
+    declared = None
+    if declared_count is not None and not pd.isna(declared_count):
+        declared = float(declared_count)
+    conflict_delta = None
+    if declared is not None:
+        conflict_delta = abs(parsed_count - declared)
+        if conflict_delta > 0.01:
+            flags.append("resource_parse_conflict")
+
+    confidence = 0.0
+    if parsed_count > 0:
+        confidence = recognized_ratio
+        if declared is not None and conflict_delta is not None and conflict_delta > 0.01:
+            confidence *= 0.5
+
+    return {
+        "equipment_vector": parsed,
+        "resource_parse_confidence": float(round(confidence, 4)),
+        "resource_parse_flags": flags,
+        "resource_vector_sum": parsed_count,
+        "resource_count_declared": declared,
+        "resource_count_parsed": parsed_count,
+        "resource_count_conflict": conflict_delta,
+        "raw_equipment": value,
+    }
+
+
 def get_all_resource_categories() -> list[str]:
     """Return the union of categories present in the canonical normative vectors."""
     categories: set[str] = set()
@@ -168,8 +224,60 @@ def normalize_vector(vector: pd.Series, max_values: Optional[dict[str, int]] = N
 def process_equipment_column(df: pd.DataFrame, equipment_col: str = "equipment") -> pd.DataFrame:
     """Add parsed equipment vectors for downstream rank assignment."""
     result = df.copy()
-    result["equipment_vector"] = result[equipment_col].apply(parse_equipment_field)
-    result["equipment_vector_norm"] = result["equipment_vector"].apply(
-        lambda value: normalize_vector(build_resource_vector(value))
+    declared = (
+        result["equipment_count"]
+        if "equipment_count" in result.columns
+        else pd.Series(index=result.index, dtype=float)
     )
+    diagnostics = [
+        analyze_equipment_parse(raw, declared_count=declared.loc[idx] if idx in declared.index else None)
+        for idx, raw in result[equipment_col].items()
+    ]
+    result["equipment_vector"] = [item["equipment_vector"] for item in diagnostics]
+    result["resource_parse_confidence"] = [item["resource_parse_confidence"] for item in diagnostics]
+    result["resource_parse_flags"] = [item["resource_parse_flags"] for item in diagnostics]
+    result["resource_vector_sum"] = [item["resource_vector_sum"] for item in diagnostics]
+    result["resource_count_declared"] = [item["resource_count_declared"] for item in diagnostics]
+    result["resource_count_parsed"] = [item["resource_count_parsed"] for item in diagnostics]
+    result["resource_count_conflict"] = [item["resource_count_conflict"] for item in diagnostics]
+    result["equipment_vector_norm"] = [
+        normalize_vector(build_resource_vector(value)) for value in result["equipment_vector"].tolist()
+    ]
     return result
+
+
+def build_unparsed_equipment_report(
+    df: pd.DataFrame,
+    *,
+    equipment_col: str = "equipment",
+    top_n: int = 10,
+) -> pd.DataFrame:
+    """Return the most frequent unparsed/low-confidence equipment strings."""
+    diagnostics = [
+        analyze_equipment_parse(raw, declared_count=row.get("equipment_count"))
+        for _, row in df.iterrows()
+        for raw in [row.get(equipment_col)]
+    ]
+    report_rows = []
+    for item in diagnostics:
+        if item["resource_parse_confidence"] >= 1.0 and not item["resource_parse_flags"]:
+            continue
+        report_rows.append(
+            {
+                "equipment": item["raw_equipment"],
+                "resource_parse_confidence": item["resource_parse_confidence"],
+                "resource_parse_flags": ",".join(item["resource_parse_flags"]),
+            }
+        )
+    if not report_rows:
+        return pd.DataFrame(columns=["equipment", "count", "resource_parse_confidence", "resource_parse_flags"])
+    report = (
+        pd.DataFrame(report_rows)
+        .groupby(["equipment", "resource_parse_confidence", "resource_parse_flags"], dropna=False)
+        .size()
+        .reset_index(name="count")
+        .sort_values("count", ascending=False)
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+    return report

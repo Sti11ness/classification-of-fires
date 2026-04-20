@@ -149,6 +149,15 @@ Desktop-слой организован как MVVM + Use Case + Infrastructure.
 | `use_cases/save_decision_use_case.py` | сохранение кейса и решения ЛПР в SQLite |
 | `use_cases/batch_predict_export_use_case.py` | пакетный прогноз по Excel и экспорт результатов |
 
+Ключевой follow-up после методологической ветки:
+
+- форма ЛПР строится по `input_schema` активной production-safe модели;
+- fallback schema = `dispatch_initial_safe`;
+- `dispatch_initial_safe` не содержит `source_item_code`;
+- `AssignRankTzUseCase` по умолчанию не перезаписывает `human_verified` / `lpr_decision` строки;
+- train и predict используют один и тот же stage-aware feature engineering helper;
+- parser техники пишет parse confidence/conflict metadata и может выводить строку из canonical training.
+
 #### ViewModels
 
 | Файл | Ответственность |

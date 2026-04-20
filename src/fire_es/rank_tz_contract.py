@@ -32,6 +32,26 @@ DEPLOYMENT_ROLE_ARRIVAL = "rank_tz_lpr_arrival_production"
 DEPLOYMENT_ROLE_FIRST_HOSE = "rank_tz_lpr_first_hose_production"
 OFFLINE_DEPLOYMENT_ROLE = "rank_tz_offline_benchmark"
 PRODUCTION_DEPLOYMENT_ROLE = DEPLOYMENT_ROLE_DISPATCH
+DEFAULT_LPR_FEATURE_SET = "dispatch_initial_safe"
+
+LEGACY_FEATURE_SET_ALIASES = {
+    "online_tactical": "first_hose_update_safe",
+}
+
+DISPATCH_FORBIDDEN_FIELDS = {
+    "source_item_code",
+    "t_arrival_min",
+    "t_first_hose_min",
+    "t_contained_min",
+    "t_extinguished_min",
+    "fatalities",
+    "injuries",
+    "direct_damage",
+    "equipment_count",
+    "nozzle_count",
+    "rank_tz_count_proxy",
+    "predicted_rank",
+}
 
 RANK_TO_CLASS_MAP = {
     1.0: 1,
@@ -232,6 +252,103 @@ FIELD_SPECS: dict[str, dict[str, Any]] = {
     },
 }
 
+FIELD_POLICY_DEFAULTS = {
+    "optional_for_lpr": False,
+    "known_at_dispatch": False,
+    "known_at_arrival": False,
+    "known_at_first_hose": False,
+    "missing_indicator_always": False,
+}
+
+FIELD_POLICY_OVERRIDES: dict[str, dict[str, Any]] = {
+    "region_code": {
+        "known_at_dispatch": True,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+    },
+    "settlement_type_code": {
+        "optional_for_lpr": True,
+        "known_at_dispatch": True,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "fire_protection_code": {
+        "optional_for_lpr": True,
+        "known_at_dispatch": True,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "enterprise_type_code": {
+        "optional_for_lpr": True,
+        "known_at_dispatch": True,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "building_floors": {
+        "optional_for_lpr": True,
+        "known_at_dispatch": True,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "fire_floor": {
+        "optional_for_lpr": True,
+        "known_at_dispatch": True,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "fire_resistance_code": {
+        "optional_for_lpr": True,
+        "known_at_dispatch": True,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "source_item_code": {
+        "optional_for_lpr": True,
+        "known_at_dispatch": False,
+        "known_at_arrival": False,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "distance_to_station": {
+        "optional_for_lpr": True,
+        "known_at_dispatch": True,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "t_detect_min": {
+        "optional_for_lpr": True,
+        "known_at_dispatch": True,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "t_report_min": {
+        "optional_for_lpr": True,
+        "known_at_dispatch": True,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "t_arrival_min": {
+        "optional_for_lpr": False,
+        "known_at_arrival": True,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+    "t_first_hose_min": {
+        "optional_for_lpr": False,
+        "known_at_first_hose": True,
+        "missing_indicator_always": True,
+    },
+}
+
 
 FEATURE_SET_SPECS: dict[str, dict[str, Any]] = {
     "basic": {
@@ -262,7 +379,6 @@ FEATURE_SET_SPECS: dict[str, dict[str, Any]] = {
             "building_floors",
             "fire_floor",
             "fire_resistance_code",
-            "source_item_code",
             "distance_to_station",
             "t_detect_min",
             "t_report_min",
@@ -444,8 +560,54 @@ def get_input_schema(feature_set: str) -> list[dict[str, Any]]:
         field.setdefault("type", "float")
         field.setdefault("kind", "numeric")
         field.setdefault("null_sentinel", -1.0)
+        for key, value in FIELD_POLICY_DEFAULTS.items():
+            field.setdefault(key, value)
+        for key, value in FIELD_POLICY_OVERRIDES.get(feature_name, {}).items():
+            field[key] = value
         schema.append(field)
     return schema
+
+
+def get_default_lpr_feature_set() -> str:
+    return DEFAULT_LPR_FEATURE_SET
+
+
+def get_optional_lpr_fields(feature_set: str) -> list[str]:
+    return [field["name"] for field in get_input_schema(feature_set) if field.get("optional_for_lpr")]
+
+
+def get_feature_set_forbidden_violations(
+    feature_order: list[str],
+    *,
+    availability_stage: str,
+) -> list[str]:
+    if availability_stage == AVAILABILITY_STAGE_DISPATCH:
+        return sorted(DISPATCH_FORBIDDEN_FIELDS.intersection(feature_order))
+    return []
+
+
+def is_feature_set_production_safe(
+    feature_order: list[str],
+    *,
+    availability_stage: str,
+) -> bool:
+    return not get_feature_set_forbidden_violations(feature_order, availability_stage=availability_stage)
+
+
+def validate_stage_input_requirements(
+    input_data: dict[str, Any],
+    *,
+    availability_stage: str,
+) -> list[str]:
+    missing: list[str] = []
+    if availability_stage == AVAILABILITY_STAGE_ARRIVAL:
+        if input_data.get("t_arrival_min") in (None, "") or pd.isna(input_data.get("t_arrival_min")):
+            missing.append("t_arrival_min")
+    elif availability_stage == AVAILABILITY_STAGE_FIRST_HOSE:
+        for field in ("t_arrival_min", "t_first_hose_min"):
+            if input_data.get(field) in (None, "") or pd.isna(input_data.get(field)):
+                missing.append(field)
+    return missing
 
 
 def map_rank_series_to_classes(y: pd.Series) -> pd.Series:
@@ -472,6 +634,12 @@ def ensure_feature_frame(
 
 def _field_kind(feature_name: str) -> str:
     return FIELD_SPECS.get(feature_name, {}).get("kind", "numeric")
+
+
+def _field_policy(feature_name: str, key: str, default: Any = None) -> Any:
+    if feature_name in FIELD_POLICY_OVERRIDES and key in FIELD_POLICY_OVERRIDES[feature_name]:
+        return FIELD_POLICY_OVERRIDES[feature_name][key]
+    return FIELD_POLICY_DEFAULTS.get(key, default)
 
 
 def _categorical_fill_token(value: Any) -> str:
@@ -509,7 +677,7 @@ def build_preprocessor_artifact(
         kind = _field_kind(column)
         raw = frame[column]
         missing_indicator_name = f"{column}__missing"
-        if raw.isna().any():
+        if raw.isna().any() or bool(_field_policy(column, "missing_indicator_always", False)):
             transformed[missing_indicator_name] = raw.isna().astype(float)
             missing_indicators.append(missing_indicator_name)
             feature_names_out.append(missing_indicator_name)
@@ -581,6 +749,8 @@ def build_preprocessor_artifact(
         "category_maps": category_maps,
         "unknown_category_policy": "one_hot_unknown_or_frequency_zero",
         "feature_names_out": feature_names_out,
+        "missing_policy": "none_is_unknown",
+        "optional_lpr_fields": [field for field in feature_order if _field_policy(field, "optional_for_lpr", False)],
     }
     return artifact, transformed[feature_names_out]
 
@@ -645,11 +815,23 @@ def _apply_legacy_preprocessor_artifact(
     return frame[feature_order]
 
 
-def add_rank_tz_engineered_features(df: pd.DataFrame, feature_set: str) -> pd.DataFrame:
-    if feature_set not in {"enhanced_tactical", "arrival_update_safe", "first_hose_update_safe"}:
-        return df
+def prepare_feature_payload(
+    payload: pd.DataFrame | dict[str, Any],
+    *,
+    feature_set: str,
+    availability_stage: Optional[str] = None,
+) -> pd.DataFrame:
+    """Apply the shared stage-aware feature engineering pipeline."""
+    if isinstance(payload, pd.DataFrame):
+        enriched = payload.copy()
+    else:
+        enriched = pd.DataFrame([payload])
 
-    enriched = df.copy()
+    resolved_feature_set = LEGACY_FEATURE_SET_ALIASES.get(feature_set, feature_set)
+    availability_stage = availability_stage or get_feature_set_spec(feature_set).get("availability_stage")
+
+    if resolved_feature_set not in {"enhanced_tactical", "arrival_update_safe", "first_hose_update_safe"}:
+        return enriched
 
     if "fire_date" in enriched.columns:
         dates = pd.to_datetime(enriched["fire_date"], errors="coerce")
@@ -706,21 +888,21 @@ def add_rank_tz_engineered_features(df: pd.DataFrame, feature_set: str) -> pd.Da
     ]:
         enriched[indicator_name] = enriched[column].isna().astype(float) if column in enriched.columns else 1.0
 
-    if {"t_detect_min", "t_report_min"}.issubset(enriched.columns):
+    if resolved_feature_set == "enhanced_tactical" and {"t_detect_min", "t_report_min"}.issubset(enriched.columns):
         detect = pd.to_numeric(enriched["t_detect_min"], errors="coerce")
         report = pd.to_numeric(enriched["t_report_min"], errors="coerce")
         enriched["delta_detect_to_report"] = report - detect
-    else:
+    elif resolved_feature_set == "enhanced_tactical":
         enriched["delta_detect_to_report"] = np.nan
 
-    if {"t_report_min", "t_arrival_min"}.issubset(enriched.columns):
+    if availability_stage in {AVAILABILITY_STAGE_ARRIVAL, AVAILABILITY_STAGE_FIRST_HOSE, AVAILABILITY_STAGE_RETROSPECTIVE} and {"t_report_min", "t_arrival_min"}.issubset(enriched.columns):
         report = pd.to_numeric(enriched["t_report_min"], errors="coerce")
         arrival = pd.to_numeric(enriched["t_arrival_min"], errors="coerce")
         enriched["delta_report_to_arrival"] = arrival - report
     else:
         enriched["delta_report_to_arrival"] = np.nan
 
-    if {"t_arrival_min", "t_first_hose_min"}.issubset(enriched.columns):
+    if availability_stage in {AVAILABILITY_STAGE_FIRST_HOSE, AVAILABILITY_STAGE_RETROSPECTIVE} and {"t_arrival_min", "t_first_hose_min"}.issubset(enriched.columns):
         arrival = pd.to_numeric(enriched["t_arrival_min"], errors="coerce")
         first_hose = pd.to_numeric(enriched["t_first_hose_min"], errors="coerce")
         enriched["delta_arrival_to_hose"] = first_hose - arrival
@@ -730,8 +912,20 @@ def add_rank_tz_engineered_features(df: pd.DataFrame, feature_set: str) -> pd.Da
     return enriched
 
 
+def add_rank_tz_engineered_features(
+    df: pd.DataFrame,
+    feature_set: str,
+    availability_stage: Optional[str] = None,
+) -> pd.DataFrame:
+    return prepare_feature_payload(
+        df,
+        feature_set=feature_set,
+        availability_stage=availability_stage,
+    )
+
+
 def get_manual_inference_feature_order() -> list[str]:
-    return FEATURE_SET_SPECS["dispatch_initial_safe"]["feature_order"]
+    return FEATURE_SET_SPECS[DEFAULT_LPR_FEATURE_SET]["feature_order"]
 
 
 def _validate_preprocessor_artifact(artifact: dict[str, Any]) -> None:

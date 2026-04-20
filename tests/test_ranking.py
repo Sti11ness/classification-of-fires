@@ -122,7 +122,7 @@ class TestAssignRankTz:
         df = pd.DataFrame({"equipment": [None, "11, 23"]})
         result = assign_rank_tz(df, target_definition="vector")
         assert pd.isna(result["rank_tz"].iloc[0])
-        assert "missing_resources" in result["rank_quality_flags"].iloc[0]
+        assert "missing_or_unparsed_resources" in result["rank_quality_flags"].iloc[0]
         assert result["rank_tz"].iloc[1] == 2.0
 
 

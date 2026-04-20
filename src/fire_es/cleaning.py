@@ -68,7 +68,6 @@ def build_event_identity(df: pd.DataFrame) -> pd.DataFrame:
     enterprise = pd.to_numeric(enriched.get("enterprise_type_code"), errors="coerce")
     floors = pd.to_numeric(enriched.get("building_floors"), errors="coerce")
     fire_floor = pd.to_numeric(enriched.get("fire_floor"), errors="coerce")
-    source_item = pd.to_numeric(enriched.get("source_item_code"), errors="coerce")
     object_name = enriched.get("object_name", pd.Series(index=enriched.index, dtype=object))
     address = enriched.get("address", pd.Series(index=enriched.index, dtype=object))
 
@@ -86,9 +85,6 @@ def build_event_identity(df: pd.DataFrame) -> pd.DataFrame:
             ),
             "building_floors": floors.map(lambda value: "" if pd.isna(value) else str(int(value))),
             "fire_floor": fire_floor.map(lambda value: "" if pd.isna(value) else str(int(value))),
-            "source_item_code": source_item.map(
-                lambda value: "" if pd.isna(value) else str(int(value))
-            ),
             "object_name": object_name.map(_normalize_free_text),
             "address": address.map(_normalize_free_text),
         }
@@ -126,7 +122,6 @@ def build_event_identity(df: pd.DataFrame) -> pd.DataFrame:
         "enterprise_type_code",
         "building_floors",
         "fire_floor",
-        "source_item_code",
         "object_name",
         "address",
         "equipment",
@@ -153,7 +148,11 @@ def build_event_identity(df: pd.DataFrame) -> pd.DataFrame:
     duplicate_policy = pd.Series("unique", index=enriched.index, dtype=object)
     duplicate_mask = enriched["_group_size"] > 1
     duplicate_policy.loc[duplicate_mask] = "canonical_event_only"
-    conflict_fields = [column for column in ["equipment", "equipment_count", "nozzle_count"] if column in enriched.columns]
+    conflict_fields = [
+        column
+        for column in ["equipment", "equipment_count", "nozzle_count", "source_item_code"]
+        if column in enriched.columns
+    ]
     if conflict_fields:
         conflict_groups = (
             enriched.groupby("duplicate_group_id")[conflict_fields]

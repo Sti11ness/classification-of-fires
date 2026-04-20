@@ -22,7 +22,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "fire_es"))
 
 from fire_es.predict import RANK_NAMES, predict_with_confidence
-from fire_es.rank_tz_contract import PRODUCTION_DEPLOYMENT_ROLE, apply_preprocessor_artifact
+from fire_es.rank_tz_contract import (
+    PRODUCTION_DEPLOYMENT_ROLE,
+    apply_preprocessor_artifact,
+    prepare_feature_payload,
+)
 
 logger = logging.getLogger("BatchPredictExportUseCase")
 
@@ -110,7 +114,12 @@ class BatchPredictExportUseCase(BaseUseCase):
             self.report_progress(3, 4, f"Прогноз ({len(df_input)} записей)")
             self.check_cancelled()
 
-            X = apply_preprocessor_artifact(df_input, preprocessor_artifact)
+            engineered = prepare_feature_payload(
+                df_input,
+                feature_set=model_info.get("feature_set", preprocessor_artifact.get("feature_set", feature_set)),
+                availability_stage=model_info.get("availability_stage"),
+            )
+            X = apply_preprocessor_artifact(engineered, preprocessor_artifact)
 
             rows: list[dict[str, Any]] = []
             for index in range(len(X)):
@@ -226,7 +235,7 @@ class BatchPredictExportUseCase(BaseUseCase):
                 return None
             return model_info
 
-        return registry.get_active_model_for_role(
-            target="rank_tz",
-            deployment_role=PRODUCTION_DEPLOYMENT_ROLE,
-        )
+        active = registry.get_active_model_info()
+        if active and registry.is_model_production_safe(active):
+            return active
+        return None

@@ -31,7 +31,7 @@ def test_event_identity_groups_cross_sheet_duplicates():
                 "enterprise_type_code": 11,
                 "building_floors": 9,
                 "fire_floor": 3,
-                "source_item_code": 12,
+                "source_item_code": 44,
                 "object_name": "Склад",
                 "address": "Улица 1",
                 "equipment_count": 3,

@@ -15,6 +15,10 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from .artifact_store import ArtifactStore
+from fire_es.rank_tz_contract import (
+    AVAILABILITY_STAGE_DISPATCH,
+    get_feature_set_forbidden_violations,
+)
 
 PRODUCTION_ROLE_WHITELIST = {
     "rank_tz_lpr_dispatch_production",
@@ -219,6 +223,8 @@ class ModelRegistry:
             return False
         if model_info.get("semantic_target") != "rank_tz_vector":
             return False
+        if model_info.get("feature_set") == "online_tactical" or model_info.get("legacy_alias"):
+            return False
         if model_info.get("split_protocol") not in PRODUCTION_SAFE_SPLITS:
             return False
         if float(model_info.get("event_overlap_rate", 1.0)) != 0.0:
@@ -231,6 +237,11 @@ class ModelRegistry:
             return False
         if not model_info.get("input_schema"):
             return False
+        feature_order = model_info.get("features", [])
+        availability_stage = model_info.get("availability_stage")
+        if availability_stage == AVAILABILITY_STAGE_DISPATCH:
+            if get_feature_set_forbidden_violations(feature_order, availability_stage=availability_stage):
+                return False
         return True
 
     def delete_model(self, model_id: str) -> None:

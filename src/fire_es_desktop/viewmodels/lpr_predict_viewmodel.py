@@ -160,6 +160,7 @@ class LPRPredictViewModel:
                 self.state.model_info = {
                     "model_id": data.get("model_id", ""),
                     "model_name": data.get("model_name", ""),
+                    "feature_set": data.get("feature_set", ""),
                     "semantic_target": data.get("semantic_target", ""),
                     "availability_stage": data.get("availability_stage", ""),
                     "split_protocol": data.get("split_protocol", ""),
@@ -282,6 +283,10 @@ class LPRPredictViewModel:
         if self._normative_table is None:
             self._normative_table = self.predict_use_case.get_normative_table()
         return self._normative_table
+
+    def get_input_contract(self) -> Dict[str, Any]:
+        """Return active-model-driven input contract for the LPR UI."""
+        return self.predict_use_case.get_input_contract()
 
     def get_prediction_chart_data(self) -> Dict[str, Any]:
         """

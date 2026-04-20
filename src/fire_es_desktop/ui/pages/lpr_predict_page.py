@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QDoubleSpinBox, QSpinBox,
     QComboBox, QTextEdit, QSplitter, QMessageBox, QProgressBar,
     QAbstractSpinBox,
-    QTableWidget
+    QTableWidget, QTableWidgetItem
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QKeyEvent, QValidator
@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 import pandas as pd
-from fire_es.rank_tz_contract import get_input_schema
+from fire_es.normatives import get_normative_rank_table
+from fire_es.rank_tz_contract import DEFAULT_LPR_FEATURE_SET, get_input_schema
 
 
 class NullableSpinBox(QSpinBox):
@@ -299,8 +300,9 @@ class LPRPredictPage(QWidget):
         self.viewmodel = None
         self.predict_worker = None
         self.save_worker = None
-        self.input_schema = get_input_schema("online_tactical")
+        self.input_schema = get_input_schema(DEFAULT_LPR_FEATURE_SET)
         self.input_widgets: dict[str, QSpinBox | QDoubleSpinBox] = {}
+        self.input_form_layout: Optional[QFormLayout] = None
 
         self._init_ui()
 
@@ -320,16 +322,30 @@ class LPRPredictPage(QWidget):
         input_group = QGroupBox("Входные параметры пожара (разделы 1-2)")
         input_layout = QFormLayout(input_group)
         input_layout.setSpacing(10)
-        self._build_input_widgets(input_layout)
-
-        self.input_hint = QLabel(
-            "Поля редактируются напрямую с клавиатуры. Значение «Не указано» оставляет поле пустым для модели."
-        )
-        self.input_hint.setWordWrap(True)
-        self.input_hint.setStyleSheet("font-size: 12px; color: #f0f0f0;")
-        input_layout.addRow("", self.input_hint)
+        self.input_form_layout = input_layout
 
         main_layout.addWidget(input_group)
+
+        contract_group = QGroupBox("Активный контракт модели")
+        contract_layout = QFormLayout(contract_group)
+        contract_layout.setSpacing(8)
+        self.contract_feature_set = QLabel("dispatch_initial_safe")
+        self.contract_stage = QLabel("dispatch_initial")
+        self.contract_target = QLabel("rank_tz_vector")
+        self.contract_split = QLabel("n/a")
+        self.contract_normative_version = QLabel("n/a")
+        self.contract_warnings = QLabel("")
+        self.contract_warnings.setWordWrap(True)
+        self.contract_warnings.setStyleSheet("font-size: 12px; color: #ffd27f;")
+        contract_layout.addRow("Feature set:", self.contract_feature_set)
+        contract_layout.addRow("Stage:", self.contract_stage)
+        contract_layout.addRow("Semantic target:", self.contract_target)
+        contract_layout.addRow("Split protocol:", self.contract_split)
+        contract_layout.addRow("Normative version:", self.contract_normative_version)
+        contract_layout.addRow("Warnings:", self.contract_warnings)
+        main_layout.addWidget(contract_group)
+
+        self._set_input_schema(self.input_schema)
 
         # Кнопка прогноза
         self.predict_btn = QPushButton("Прогнозировать")
@@ -470,31 +486,11 @@ class LPRPredictPage(QWidget):
 
     def _create_normative_table(self) -> QTableWidget:
         """Создать нормативную таблицу."""
-        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
-
         table = QTableWidget()
-        table.setColumnCount(4)
+        table.setColumnCount(5)
         table.setHorizontalHeaderLabels([
-            "Ранг", "Название", "Техника (ед.)", "Описание"
+            "Ранг", "Название", "Техника (ед.)", "Ресурсный вектор", "Версия"
         ])
-
-        # Данные (упрощённые)
-        data = [
-            ("1", "Ранг 1", "2", "Минимальный"),
-            ("1-бис", "Ранг 1-бис", "2", "Минимальный усиленный"),
-            ("2", "Ранг 2", "3", "Средний"),
-            ("3", "Ранг 3", "5", "Повышенный"),
-            ("4", "Ранг 4", "8", "Высокий"),
-            ("5", "Ранг 5", "12", "Максимальный")
-        ]
-
-        table.setRowCount(len(data))
-        for i, row in enumerate(data):
-            for j, value in enumerate(row):
-                item = QTableWidgetItem(value)
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                table.setItem(i, j, item)
-
         table.horizontalHeader().setStretchLastSection(True)
         table.setFixedHeight(200)
 
@@ -514,9 +510,31 @@ class LPRPredictPage(QWidget):
             from ...viewmodels import LPRPredictViewModel
             self.viewmodel = LPRPredictViewModel(models_path, db_path)
             self.predict_btn.setEnabled(True)
+            self._apply_input_contract(self.viewmodel.get_input_contract())
+            self._populate_normative_table(self.viewmodel.get_normative_table())
         else:
             self.viewmodel = None
             self.predict_btn.setEnabled(False)
+            self._apply_input_contract(
+                {
+                    "feature_set": DEFAULT_LPR_FEATURE_SET,
+                    "availability_stage": "dispatch_initial",
+                    "semantic_target": "rank_tz_vector",
+                    "input_schema": get_input_schema(DEFAULT_LPR_FEATURE_SET),
+                    "split_protocol": "n/a",
+                    "normative_version": "n/a",
+                    "warnings": [],
+                }
+            )
+            self._populate_normative_table(
+                get_normative_rank_table().rename(
+                    columns={
+                        "label": "rank_name",
+                        "display_name": "rank_display_name",
+                        "min_equipment_count": "equipment_count",
+                    }
+                )
+            )
 
     def _on_predict(self) -> None:
         """Выполнить прогноз."""
@@ -548,6 +566,7 @@ class LPRPredictPage(QWidget):
         self.predict_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status_label.setText("Прогноз выполнен")
+        self._sync_contract_from_viewmodel()
 
         # Обновить диаграмму (заглушка — в реальности использовать график)
         ranks = chart_data.get("ranks", [])
@@ -675,6 +694,69 @@ class LPRPredictPage(QWidget):
             widget = self._create_widget_for_field(field)
             self.input_widgets[field["name"]] = widget
             layout.addRow(f"{field['label']}:", widget)
+        input_hint = QLabel(
+            "Поля редактируются напрямую с клавиатуры. Значение «Не указано» оставляет поле пустым для модели."
+        )
+        input_hint.setWordWrap(True)
+        input_hint.setStyleSheet("font-size: 12px; color: #f0f0f0;")
+        layout.addRow("", input_hint)
+
+    def _set_input_schema(self, schema: list[dict[str, Any]]) -> None:
+        """Replace the current input schema and rebuild the widgets."""
+        self.input_schema = schema
+        self.input_widgets = {}
+        if self.input_form_layout is None:
+            return
+        while self.input_form_layout.rowCount():
+            self.input_form_layout.removeRow(0)
+        self._build_input_widgets(self.input_form_layout)
+
+    def _apply_input_contract(self, contract: Dict[str, Any]) -> None:
+        """Apply active-model input contract to the page."""
+        self.contract_feature_set.setText(str(contract.get("feature_set", DEFAULT_LPR_FEATURE_SET)))
+        self.contract_stage.setText(str(contract.get("availability_stage", "dispatch_initial")))
+        self.contract_target.setText(str(contract.get("semantic_target", "rank_tz_vector")))
+        self.contract_split.setText(str(contract.get("split_protocol", "n/a")))
+        self.contract_normative_version.setText(str(contract.get("normative_version", "n/a")))
+        warnings = contract.get("warnings") or []
+        self.contract_warnings.setText("; ".join(warnings) if warnings else "Нет")
+        schema = contract.get("input_schema") or get_input_schema(DEFAULT_LPR_FEATURE_SET)
+        self._set_input_schema(schema)
+
+    def _populate_normative_table(self, normative_df: pd.DataFrame) -> None:
+        """Render normative rows from the shared loader output."""
+        self.normative_table.setRowCount(0)
+        if normative_df is None or normative_df.empty:
+            return
+        self.normative_table.setRowCount(len(normative_df))
+        for row_index, (_, row) in enumerate(normative_df.iterrows()):
+            values = [
+                str(row.get("rank_name", "")),
+                str(row.get("rank_display_name", row.get("rank_name", ""))),
+                str(row.get("equipment_count", "")),
+                str(row.get("resource_vector", "")),
+                self.contract_normative_version.text(),
+            ]
+            for col_index, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.normative_table.setItem(row_index, col_index, item)
+
+    def _sync_contract_from_viewmodel(self) -> None:
+        """Refresh read-only contract labels from current viewmodel state."""
+        if not self.viewmodel:
+            return
+        model_info = self.viewmodel.state.model_info
+        if model_info:
+            self.contract_feature_set.setText(model_info.get("feature_set", self.contract_feature_set.text()))
+            self.contract_stage.setText(model_info.get("availability_stage", self.contract_stage.text()))
+            self.contract_target.setText(model_info.get("semantic_target", self.contract_target.text()))
+            self.contract_split.setText(model_info.get("split_protocol", self.contract_split.text()))
+            self.contract_normative_version.setText(
+                model_info.get("normative_version", self.contract_normative_version.text())
+            )
+        warnings = self.viewmodel.state.model_warnings
+        self.contract_warnings.setText("; ".join(warnings) if warnings else "Нет")
 
     def _create_widget_for_field(
         self,
@@ -721,6 +803,14 @@ class LPRPredictPage(QWidget):
         if line_edit is not None:
             line_edit.setPlaceholderText("Не указано")
             line_edit.setClearButtonEnabled(False)
+        if field.get("optional_for_lpr", False):
+            tooltip = (
+                "Если значение неизвестно, оставьте поле пустым. "
+                "Не вводите 0 вместо неизвестного значения."
+            )
+            widget.setToolTip(tooltip)
+            if line_edit is not None:
+                line_edit.setToolTip(tooltip)
         return widget
 
     def _collect_input_data(self) -> Dict[str, Any]:

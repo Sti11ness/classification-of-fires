@@ -41,7 +41,9 @@ from fire_es.rank_tz_contract import (
     AVAILABILITY_STAGE_DISPATCH,
     SEMANTIC_TARGET_RANK_TZ_COUNT_PROXY,
     SEMANTIC_TARGET_RANK_TZ_VECTOR,
-    add_rank_tz_engineered_features,
+    get_feature_set_forbidden_violations,
+    get_optional_lpr_fields,
+    prepare_feature_payload,
     apply_preprocessor_artifact,
     build_preprocessor_artifact,
     class_list_to_rank_values,
@@ -145,7 +147,25 @@ class TrainModelUseCase(BaseUseCase):
 
             spec = self._resolve_feature_spec(feature_set, custom_features)
             availability_stage = availability_stage or spec.get("availability_stage", AVAILABILITY_STAGE_DISPATCH)
-            df = add_rank_tz_engineered_features(df, spec["feature_set"])
+            forbidden_feature_violations = get_feature_set_forbidden_violations(
+                spec["feature_order"],
+                availability_stage=availability_stage,
+            )
+            forbidden_feature_check_passed = not forbidden_feature_violations
+            if not forbidden_feature_check_passed and not spec["offline_only"]:
+                return UseCaseResult(
+                    success=False,
+                    message=(
+                        "Набор признаков содержит запрещенные поля для выбранной стадии: "
+                        + ", ".join(forbidden_feature_violations)
+                    ),
+                    warnings=warnings,
+                )
+            df = prepare_feature_payload(
+                df,
+                feature_set=spec["feature_set"],
+                availability_stage=availability_stage,
+            )
 
             self.report_progress(2, 7, "Подготовка признаков и target")
             self.check_cancelled()
@@ -273,6 +293,10 @@ class TrainModelUseCase(BaseUseCase):
                 "duplicate_policy": "canonical_event_only" if canonical_only else "all_rows",
                 "normative_version": normative_payload["normative_version"],
                 "normative_hash": get_normative_hash(normative_payload),
+                "forbidden_feature_check_passed": forbidden_feature_check_passed,
+                "forbidden_feature_violations": forbidden_feature_violations,
+                "missing_policy": "none_is_unknown",
+                "optional_lpr_fields": get_optional_lpr_fields(spec["feature_set"]),
                 "missing_pct_top20": missingness.head(20).to_dict(),
                 "class_distribution_train": class_distribution_train,
                 "class_distribution_test": class_distribution_test,
@@ -370,6 +394,10 @@ class TrainModelUseCase(BaseUseCase):
                 "normative_version": normative_payload["normative_version"],
                 "normative_hash": get_normative_hash(normative_payload),
                 "calibration_status": calibration_status,
+                "forbidden_feature_check_passed": forbidden_feature_check_passed,
+                "forbidden_feature_violations": forbidden_feature_violations,
+                "missing_policy": "none_is_unknown",
+                "optional_lpr_fields": get_optional_lpr_fields(spec["feature_set"]),
                 "created_at": pd.Timestamp.now().isoformat(),
                 "artifact_path": model_path.name,
                 "metadata_path": metadata_path.name,
@@ -411,6 +439,10 @@ class TrainModelUseCase(BaseUseCase):
                 "metric_primary": metric_primary,
                 "normative_version": normative_payload["normative_version"],
                 "calibration_status": calibration_status,
+                "forbidden_feature_check_passed": forbidden_feature_check_passed,
+                "forbidden_feature_violations": forbidden_feature_violations,
+                "missing_policy": "none_is_unknown",
+                "optional_lpr_fields": get_optional_lpr_fields(spec["feature_set"]),
             }
             if tree_artifact_name:
                 registry_extra["tree_artifact_path"] = tree_artifact_name

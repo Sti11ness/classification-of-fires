@@ -23,8 +23,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "fire_es"))
 from fire_es.predict import RANK_NAMES, predict_with_confidence
 from fire_es.rank_tz_contract import (
     AVAILABILITY_STAGE_RETROSPECTIVE,
+    DEFAULT_LPR_FEATURE_SET,
     PRODUCTION_DEPLOYMENT_ROLE,
     SEMANTIC_TARGET_RANK_TZ_VECTOR,
+    get_feature_set_spec,
+    get_input_schema,
+    prepare_feature_payload,
+    validate_stage_input_requirements,
     apply_preprocessor_artifact,
 )
 from fire_es.normatives import get_normative_rank_table
@@ -98,7 +103,26 @@ class PredictUseCase(BaseUseCase):
             self.report_progress(2, 3, "Подготовка входных данных")
             self.check_cancelled()
 
-            X = apply_preprocessor_artifact(input_data, preprocessor_artifact)
+            stage_errors = validate_stage_input_requirements(
+                input_data,
+                availability_stage=model_info.get("availability_stage"),
+            )
+            if stage_errors:
+                return UseCaseResult(
+                    success=False,
+                    message=(
+                        "Недостаточно данных для выбранной стадии: "
+                        + ", ".join(stage_errors)
+                    ),
+                    warnings=warnings,
+                )
+
+            engineered = prepare_feature_payload(
+                input_data,
+                feature_set=model_info.get("feature_set", preprocessor_artifact.get("feature_set", DEFAULT_LPR_FEATURE_SET)),
+                availability_stage=model_info.get("availability_stage"),
+            )
+            X = apply_preprocessor_artifact(engineered, preprocessor_artifact)
 
             self.report_progress(3, 3, "Прогнозирование")
             self.check_cancelled()
@@ -149,6 +173,7 @@ class PredictUseCase(BaseUseCase):
                     "model_id": model_info["model_id"],
                     "model_name": model_info.get("name", ""),
                     "deployment_role": model_info.get("deployment_role"),
+                    "feature_set": model_info.get("feature_set"),
                     "semantic_target": model_info.get("semantic_target"),
                     "label_source_policy": model_info.get("label_source_policy", []),
                     "availability_stage": model_info.get("availability_stage"),
@@ -190,6 +215,48 @@ class PredictUseCase(BaseUseCase):
             }
         )
 
+    def get_input_contract(self, model_id: Optional[str] = None) -> dict[str, Any]:
+        """Return the input schema contract for LPR UI construction."""
+        model_info = self._resolve_model_info(model_id=model_id)
+        if not model_info:
+            spec = get_feature_set_spec(DEFAULT_LPR_FEATURE_SET)
+            return {
+                "model_id": None,
+                "feature_set": spec["feature_set"],
+                "availability_stage": spec["availability_stage"],
+                "deployment_role": spec["deployment_role"],
+                "semantic_target": spec["semantic_target_default"],
+                "input_schema": get_input_schema(spec["feature_set"]),
+                "feature_order": spec["feature_order"],
+                "warnings": [],
+                "fallback": True,
+            }
+        input_schema = model_info.get("input_schema")
+        if not input_schema:
+            preprocessor_rel = model_info.get("preprocessor_path")
+            if preprocessor_rel:
+                with open(self.models_path / preprocessor_rel, "r", encoding="utf-8") as fh:
+                    preprocessor = json.load(fh)
+                input_schema = preprocessor.get("input_schema")
+            else:
+                input_schema = get_input_schema(model_info.get("feature_set", DEFAULT_LPR_FEATURE_SET))
+        warnings = []
+        if model_info.get("feature_set") == "online_tactical" or model_info.get("legacy_alias"):
+            warnings.append("Активная модель использует legacy alias online_tactical")
+        return {
+            "model_id": model_info.get("model_id"),
+            "feature_set": model_info.get("feature_set"),
+            "availability_stage": model_info.get("availability_stage"),
+            "deployment_role": model_info.get("deployment_role"),
+            "semantic_target": model_info.get("semantic_target"),
+            "input_schema": input_schema,
+            "feature_order": model_info.get("features", []),
+            "split_protocol": model_info.get("split_protocol"),
+            "normative_version": model_info.get("normative_version"),
+            "warnings": warnings,
+            "fallback": False,
+        }
+
     def _resolve_model_info(self, model_id: Optional[str]) -> Optional[dict[str, Any]]:
         from ..infra import ModelRegistry
 
@@ -200,10 +267,10 @@ class PredictUseCase(BaseUseCase):
                 return None
             return model_info if registry.is_model_production_safe(model_info) else None
 
-        return registry.get_active_model_for_role(
-            target="rank_tz",
-            deployment_role=PRODUCTION_DEPLOYMENT_ROLE,
-        )
+        active = registry.get_active_model_info()
+        if active and registry.is_model_production_safe(active):
+            return active
+        return None
 
     def _build_model_warnings(
         self,
@@ -216,6 +283,8 @@ class PredictUseCase(BaseUseCase):
             warnings.append("Модель не относится к canonical rank_tz_vector contour")
         if model_info.get("availability_stage") == AVAILABILITY_STAGE_RETROSPECTIVE:
             warnings.append("Retrospective model cannot be used as operational LPR model")
+        if model_info.get("feature_set") == "online_tactical" or model_info.get("legacy_alias"):
+            warnings.append("Legacy online_tactical schema is not canonical dispatch input")
         if model_info.get("event_overlap_rate", 0.0) != 0.0:
             warnings.append("Model was evaluated with non-zero event overlap")
         if model_info.get("split_protocol") == "row_random_legacy":
