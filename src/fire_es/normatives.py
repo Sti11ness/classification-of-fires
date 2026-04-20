@@ -6,15 +6,41 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 
-NORMATIVE_JSON_PATH = (
-    Path(__file__).resolve().parents[2] / "data" / "normatives" / "rank_resource_normatives.json"
-)
+NORMATIVE_JSON_RELATIVE_PATH = Path("data") / "normatives" / "rank_resource_normatives.json"
+
+
+def _default_normative_json_path() -> Path:
+    """Resolve the canonical normative JSON in source and frozen runtimes."""
+    module_path = Path(__file__).resolve()
+    candidates: list[Path] = []
+
+    # Source checkout: <repo>/src/fire_es/normatives.py -> <repo>/data/normatives/...
+    candidates.append(module_path.parents[2] / NORMATIVE_JSON_RELATIVE_PATH)
+
+    # PyInstaller one-folder: runtime data typically lands under _internal/data/...
+    candidates.append(module_path.parents[1] / NORMATIVE_JSON_RELATIVE_PATH)
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / NORMATIVE_JSON_RELATIVE_PATH)
+
+    # Last-resort cwd-relative fallback for manually rearranged deployments.
+    candidates.append(Path.cwd() / NORMATIVE_JSON_RELATIVE_PATH)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+NORMATIVE_JSON_PATH = _default_normative_json_path()
 
 
 def load_rank_resource_normatives(path: Path | None = None) -> dict[str, Any]:
