@@ -318,6 +318,11 @@ class LPRPredictPage(QWidget):
         title.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(title)
 
+        scenario_label = QLabel("Прогноз до прибытия подразделения")
+        scenario_label.setAlignment(Qt.AlignCenter)
+        scenario_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffd27f;")
+        main_layout.addWidget(scenario_label)
+
         # Зона 1: Ввод параметров (разделы 1-2)
         input_group = QGroupBox("Входные параметры пожара (разделы 1-2)")
         input_layout = QFormLayout(input_group)

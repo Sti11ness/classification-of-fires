@@ -228,7 +228,7 @@ class PredictUseCase(BaseUseCase):
                 "semantic_target": spec["semantic_target_default"],
                 "input_schema": get_input_schema(spec["feature_set"]),
                 "feature_order": spec["feature_order"],
-                "warnings": [],
+                "warnings": ["Используется fallback dispatch schema до активации production-модели"],
                 "fallback": True,
             }
         input_schema = model_info.get("input_schema")

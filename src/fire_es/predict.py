@@ -77,7 +77,8 @@ def predict_rank_topk(
     classes = model.classes_
     
     # Top-K вероятности
-    top_k_indices = np.argsort(y_proba, axis=1)[:, -top_k:][:, ::-1]
+    effective_top_k = max(1, min(top_k, y_proba.shape[1]))
+    top_k_indices = np.argsort(y_proba, axis=1)[:, -effective_top_k:][:, ::-1]
     
     results = []
     for i in range(len(X)):
@@ -87,7 +88,7 @@ def predict_rank_topk(
             "predicted_rank_idx": pred_label,
         }
 
-        for j in range(top_k):
+        for j in range(effective_top_k):
             class_idx = int(top_k_indices[i, j])
             class_label = classes[class_idx]
             rank_value = class_mapping.get(class_label, class_label)

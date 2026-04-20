@@ -6,7 +6,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from fire_es.db import init_db
 from fire_es_desktop.ui.pages.lpr_predict_page import LPRPredictPage
@@ -25,6 +25,8 @@ def test_lpr_page_defaults_to_dispatch_schema(qt_app):
     assert "t_arrival_min" not in names
     assert "t_first_hose_min" not in names
     assert "source_item_code" not in names
+    labels = [label.text() for label in page.findChildren(QLabel)]
+    assert any("до прибытия" in text.lower() for text in labels)
 
 
 def test_lpr_page_uses_active_model_schema_or_dispatch_fallback(tmp_path: Path, qt_app):

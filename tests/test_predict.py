@@ -146,6 +146,16 @@ class TestPredictRankTopk:
         
         assert "predicted_rank" in result.columns
 
+    def test_topk_handles_models_with_fewer_classes_than_requested(self):
+        X = pd.DataFrame({"x": [0, 1, 0, 1], "y": [1, 1, 2, 2]})
+        y = pd.Series([1, 1, 2, 2])
+        model = DecisionTreeClassifier(max_depth=2, random_state=42)
+        model.fit(X, y)
+        result = predict_rank_topk(model, X.head(1), top_k=3)
+        assert "top1_rank" in result.columns
+        assert "top2_rank" in result.columns
+        assert "top3_rank" not in result.columns
+
 
 # ============================================================================
 # ТЕСТЫ: bootstrap_predict_rank

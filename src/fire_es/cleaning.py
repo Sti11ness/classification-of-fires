@@ -59,15 +59,20 @@ def _normalize_free_text(value: Any) -> str:
 def build_event_identity(df: pd.DataFrame) -> pd.DataFrame:
     """Derive event identity and duplicate handling metadata."""
     enriched = df.copy()
-    fire_dates = pd.to_datetime(enriched.get("fire_date"), errors="coerce")
-    years = pd.to_numeric(enriched.get("year"), errors="coerce")
+    def _series_or_nan(column: str) -> pd.Series:
+        if column in enriched.columns:
+            return enriched[column]
+        return pd.Series([np.nan] * len(enriched), index=enriched.index)
 
-    row_ids = pd.to_numeric(enriched.get("row_id"), errors="coerce")
-    region_codes = pd.to_numeric(enriched.get("region_code"), errors="coerce")
-    settlement = pd.to_numeric(enriched.get("settlement_type_code"), errors="coerce")
-    enterprise = pd.to_numeric(enriched.get("enterprise_type_code"), errors="coerce")
-    floors = pd.to_numeric(enriched.get("building_floors"), errors="coerce")
-    fire_floor = pd.to_numeric(enriched.get("fire_floor"), errors="coerce")
+    fire_dates = pd.to_datetime(_series_or_nan("fire_date"), errors="coerce")
+    years = pd.to_numeric(_series_or_nan("year"), errors="coerce")
+
+    row_ids = pd.to_numeric(_series_or_nan("row_id"), errors="coerce")
+    region_codes = pd.to_numeric(_series_or_nan("region_code"), errors="coerce")
+    settlement = pd.to_numeric(_series_or_nan("settlement_type_code"), errors="coerce")
+    enterprise = pd.to_numeric(_series_or_nan("enterprise_type_code"), errors="coerce")
+    floors = pd.to_numeric(_series_or_nan("building_floors"), errors="coerce")
+    fire_floor = pd.to_numeric(_series_or_nan("fire_floor"), errors="coerce")
     object_name = enriched.get("object_name", pd.Series(index=enriched.index, dtype=object))
     address = enriched.get("address", pd.Series(index=enriched.index, dtype=object))
 

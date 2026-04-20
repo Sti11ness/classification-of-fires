@@ -153,6 +153,7 @@ Desktop-слой организован как MVVM + Use Case + Infrastructure.
 
 - форма ЛПР строится по `input_schema` активной production-safe модели;
 - fallback schema = `dispatch_initial_safe`;
+- canonical production activation в этой итерации ограничена `dispatch_initial_safe` и `dispatch_initial`;
 - `dispatch_initial_safe` не содержит `source_item_code`;
 - `AssignRankTzUseCase` по умолчанию не перезаписывает `human_verified` / `lpr_decision` строки;
 - train и predict используют один и тот же stage-aware feature engineering helper;

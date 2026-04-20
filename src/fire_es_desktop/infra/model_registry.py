@@ -17,13 +17,12 @@ from datetime import datetime
 from .artifact_store import ArtifactStore
 from fire_es.rank_tz_contract import (
     AVAILABILITY_STAGE_DISPATCH,
+    DEFAULT_LPR_FEATURE_SET,
     get_feature_set_forbidden_violations,
 )
 
 PRODUCTION_ROLE_WHITELIST = {
     "rank_tz_lpr_dispatch_production",
-    "rank_tz_lpr_arrival_production",
-    "rank_tz_lpr_first_hose_production",
 }
 PRODUCTION_SAFE_SPLITS = {
     "group_shuffle",
@@ -219,9 +218,11 @@ class ModelRegistry:
             return False
         if model_info.get("deployment_role") not in PRODUCTION_ROLE_WHITELIST:
             return False
-        if model_info.get("availability_stage") == "retrospective":
+        if model_info.get("availability_stage") != AVAILABILITY_STAGE_DISPATCH:
             return False
         if model_info.get("semantic_target") != "rank_tz_vector":
+            return False
+        if model_info.get("feature_set") != DEFAULT_LPR_FEATURE_SET:
             return False
         if model_info.get("feature_set") == "online_tactical" or model_info.get("legacy_alias"):
             return False
