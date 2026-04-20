@@ -7,6 +7,7 @@
 - clean_fire_data: основная функция чистки и валидации
 """
 
+import hashlib
 from typing import Any, Optional
 
 import numpy as np
@@ -26,6 +27,145 @@ from .schema import (
     TIME_COLS,
 )
 from .utils import compute_rank_ref_v2, first_int, normalize_text, parse_time
+
+
+SOURCE_PRIORITY_MAP = {
+    "lpr_manual_input": 110,
+    "бд-1": 100,
+    "1...": 80,
+    "2...": 90,
+}
+
+
+def _infer_source_priority(source_sheet: Any) -> int:
+    value = str(source_sheet or "").strip().lower()
+    for prefix, priority in SOURCE_PRIORITY_MAP.items():
+        if prefix in value:
+            return priority
+    return 10
+
+
+def _stable_hash(parts: list[str]) -> str:
+    payload = "|".join(parts).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:24]
+
+
+def _normalize_free_text(value: Any) -> str:
+    if pd.isna(value):
+        return ""
+    return " ".join(str(value).strip().lower().split())
+
+
+def build_event_identity(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive event identity and duplicate handling metadata."""
+    enriched = df.copy()
+    fire_dates = pd.to_datetime(enriched.get("fire_date"), errors="coerce")
+    years = pd.to_numeric(enriched.get("year"), errors="coerce")
+
+    row_ids = pd.to_numeric(enriched.get("row_id"), errors="coerce")
+    region_codes = pd.to_numeric(enriched.get("region_code"), errors="coerce")
+    settlement = pd.to_numeric(enriched.get("settlement_type_code"), errors="coerce")
+    enterprise = pd.to_numeric(enriched.get("enterprise_type_code"), errors="coerce")
+    floors = pd.to_numeric(enriched.get("building_floors"), errors="coerce")
+    fire_floor = pd.to_numeric(enriched.get("fire_floor"), errors="coerce")
+    source_item = pd.to_numeric(enriched.get("source_item_code"), errors="coerce")
+    object_name = enriched.get("object_name", pd.Series(index=enriched.index, dtype=object))
+    address = enriched.get("address", pd.Series(index=enriched.index, dtype=object))
+
+    key_parts = pd.DataFrame(
+        {
+            "row_id": row_ids.map(lambda value: "" if pd.isna(value) else str(int(value))),
+            "fire_date": fire_dates.dt.strftime("%Y-%m-%d").fillna(""),
+            "year": years.map(lambda value: "" if pd.isna(value) else str(int(value))),
+            "region_code": region_codes.map(lambda value: "" if pd.isna(value) else str(int(value))),
+            "settlement_type_code": settlement.map(
+                lambda value: "" if pd.isna(value) else str(int(value))
+            ),
+            "enterprise_type_code": enterprise.map(
+                lambda value: "" if pd.isna(value) else str(int(value))
+            ),
+            "building_floors": floors.map(lambda value: "" if pd.isna(value) else str(int(value))),
+            "fire_floor": fire_floor.map(lambda value: "" if pd.isna(value) else str(int(value))),
+            "source_item_code": source_item.map(
+                lambda value: "" if pd.isna(value) else str(int(value))
+            ),
+            "object_name": object_name.map(_normalize_free_text),
+            "address": address.map(_normalize_free_text),
+        }
+    )
+
+    quality_counts = key_parts.replace("", np.nan).count(axis=1)
+    low_confidence = quality_counts < 5
+    fingerprints = key_parts.apply(lambda row: "|".join(row.astype(str).tolist()), axis=1)
+    fallback_fingerprints = key_parts.drop(columns=["row_id"]).apply(
+        lambda row: "|".join(row.astype(str).tolist()),
+        axis=1,
+    )
+    event_fingerprint = np.where(low_confidence, fallback_fingerprints, fingerprints)
+    event_id = pd.Series(event_fingerprint).map(
+        lambda value: f"evt_{_stable_hash([str(value)])}" if str(value).strip("|") else None
+    )
+    duplicate_group_id = pd.Series(fallback_fingerprints).map(
+        lambda value: f"dup_{_stable_hash([str(value)])}" if str(value).strip("|") else None
+    )
+
+    enriched["event_fingerprint"] = event_fingerprint
+    enriched["event_id"] = event_id
+    enriched["duplicate_group_id"] = duplicate_group_id
+    enriched["event_id_low_confidence"] = low_confidence.astype(bool)
+    enriched["source_priority"] = enriched.get("source_sheet", pd.Series(index=enriched.index, dtype=object)).map(
+        _infer_source_priority
+    )
+
+    completeness_columns = [
+        "row_id",
+        "fire_date",
+        "year",
+        "region_code",
+        "settlement_type_code",
+        "enterprise_type_code",
+        "building_floors",
+        "fire_floor",
+        "source_item_code",
+        "object_name",
+        "address",
+        "equipment",
+        "equipment_count",
+        "nozzle_count",
+    ]
+    available_columns = [column for column in completeness_columns if column in enriched.columns]
+    enriched["_completeness_score"] = enriched[available_columns].notna().sum(axis=1)
+    enriched["_group_size"] = enriched.groupby("duplicate_group_id")["duplicate_group_id"].transform("size")
+    sort_columns = ["duplicate_group_id", "_completeness_score", "source_priority"]
+    ascending = [True, False, False]
+    if "created_at" in enriched.columns:
+        sort_columns.append("created_at")
+        ascending.append(True)
+    enriched = enriched.sort_values(
+        by=sort_columns,
+        ascending=ascending,
+        kind="stable",
+    )
+    enriched["is_canonical_event_record"] = (
+        enriched.groupby("duplicate_group_id").cumcount() == 0
+    )
+
+    duplicate_policy = pd.Series("unique", index=enriched.index, dtype=object)
+    duplicate_mask = enriched["_group_size"] > 1
+    duplicate_policy.loc[duplicate_mask] = "canonical_event_only"
+    conflict_fields = [column for column in ["equipment", "equipment_count", "nozzle_count"] if column in enriched.columns]
+    if conflict_fields:
+        conflict_groups = (
+            enriched.groupby("duplicate_group_id")[conflict_fields]
+            .nunique(dropna=True)
+            .max(axis=1)
+        )
+        conflict_ids = conflict_groups[conflict_groups > 1].index
+        duplicate_policy.loc[enriched["duplicate_group_id"].isin(conflict_ids)] = "conflict_kept"
+    enriched["duplicate_policy"] = duplicate_policy
+    enriched = enriched.sort_index()
+    enriched = enriched.drop(columns=["_completeness_score", "_group_size"], errors="ignore")
+    return enriched
 
 
 def load_fact_sheet(
@@ -220,5 +360,14 @@ def clean_fire_data(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
         "missing_outputs": int(df["flag_missing_outputs"].sum()),
         "rank_quantiles": rank_info,
     }
-
+    df = build_event_identity(df)
+    df["rank_label_source"] = np.where(df["rank_tz"].notna() if "rank_tz" in df.columns else False, "historical_vector", None)
+    df["human_verified"] = False
+    df["usable_for_training"] = df["is_canonical_event_record"].fillna(False)
+    df["rank_normative_version"] = None
+    df["rank_quality_flags"] = None
+    df["predicted_rank_at_decision"] = np.nan
+    issues["canonical_rows"] = int(df["is_canonical_event_record"].sum())
+    issues["duplicate_rows"] = int((~df["is_canonical_event_record"]).sum())
+    issues["event_id_coverage_pct"] = float(df["event_id"].notna().mean() * 100)
     return df, issues

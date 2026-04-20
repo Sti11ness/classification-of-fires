@@ -67,11 +67,13 @@ class TestCalculateRankByCount:
 
     def test_nan_input(self):
         rank, dist = calculate_rank_by_count(np.nan)
-        assert rank == 1.0
+        assert rank is None
+        assert dist is None
 
     def test_zero_input(self):
         rank, dist = calculate_rank_by_count(0)
-        assert rank == 1.0
+        assert rank is None
+        assert dist is None
 
 
 class TestCalculateRankByVector:
@@ -84,7 +86,7 @@ class TestCalculateRankByVector:
         assert dist == 0.0
 
     def test_exact_match_rank_3(self):
-        vec = pd.Series({"AC": 3, "AL": 1, "ARM": 1})
+        vec = pd.Series({"AC": 3, "AL": 1, "APS": 1})
         rank, dist = calculate_rank_by_vector(vec)
         assert rank == 3
         assert dist == 0.0
@@ -104,6 +106,7 @@ class TestAssignRankTz:
         result = assign_rank_tz(df, method="count")
 
         assert "rank_tz" in result.columns
+        assert "rank_tz_count_proxy" in result.columns
         assert "rank_distance" in result.columns
         assert result["rank_tz"].tolist() == [1.0, 1.5, 2.0, 3.0, 4.0, 5.0]
 
@@ -112,8 +115,15 @@ class TestAssignRankTz:
         result = assign_rank_tz(df, method="count")
 
         assert result["rank_tz"].iloc[0] == 1.0
-        assert result["rank_tz"].iloc[1] == 1.0  # NaN -> ранг 1
+        assert pd.isna(result["rank_tz"].iloc[1])
         assert result["rank_tz"].iloc[2] == 2.0
+
+    def test_assign_rank_vector_missing_resources_sets_quality_flag(self):
+        df = pd.DataFrame({"equipment": [None, "11, 23"]})
+        result = assign_rank_tz(df, target_definition="vector")
+        assert pd.isna(result["rank_tz"].iloc[0])
+        assert "missing_resources" in result["rank_quality_flags"].iloc[0]
+        assert result["rank_tz"].iloc[1] == 2.0
 
 
 class TestGetRankDescription:

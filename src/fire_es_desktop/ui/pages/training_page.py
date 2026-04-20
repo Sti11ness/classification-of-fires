@@ -114,15 +114,19 @@ class TrainingPage(QWidget):
         self.model_type_combo = QComboBox()
         self.model_type_combo.addItems([
             "random_forest",
-            "decision_tree"
+            "decision_tree",
+            "gradient_boosting",
         ])
         params_layout.addWidget(self.model_type_combo, 1, 1)
 
         # Набор признаков
         params_layout.addWidget(QLabel("Набор признаков:"), 2, 0)
         self.feature_set_combo = QComboBox()
-        self.feature_set_combo.addItem("online_tactical (production)", "online_tactical")
-        self.feature_set_combo.addItem("extended (offline benchmark)", "extended")
+        self.feature_set_combo.addItem("dispatch_initial_safe (production default)", "dispatch_initial_safe")
+        self.feature_set_combo.addItem("arrival_update_safe (production)", "arrival_update_safe")
+        self.feature_set_combo.addItem("first_hose_update_safe (production)", "first_hose_update_safe")
+        self.feature_set_combo.addItem("online_tactical (legacy alias)", "online_tactical")
+        self.feature_set_combo.addItem("retrospective_benchmark (offline benchmark)", "retrospective_benchmark")
         self.feature_set_combo.addItem("enhanced_tactical (offline experiment)", "enhanced_tactical")
         self.feature_set_combo.addItem("custom (offline only)", "custom")
         params_layout.addWidget(self.feature_set_combo, 2, 1)

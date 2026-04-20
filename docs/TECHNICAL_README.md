@@ -27,7 +27,8 @@
 - пользовательские обещания проверять по `src/fire_es_desktop`;
 - ML-контракты и feature sets проверять по `src/fire_es` и тестам;
 - layout Workspace проверять по `src/fire_es_desktop/workspace/workspace_manager.py`;
-- фактический production-контракт модели проверять по `src/fire_es/rank_tz_contract.py`.
+- фактический production-контракт модели проверять по `src/fire_es/rank_tz_contract.py`;
+- canonical нормативы рангов проверять по `data/normatives/rank_resource_normatives.json` и `src/fire_es/normatives.py`.
 
 ## 2. Система в одном абзаце
 
@@ -105,9 +106,13 @@ Fire ES состоит из двух рабочих контуров:
 | `schema.py` | константы колонок, маппинг RU→EN, ограничения схемы |
 | `utils.py` | низкоуровневые утилиты: нормализация текста, извлечение кода, парсинг времени, исследовательский `rank_ref` |
 | `cleaning.py` | загрузка Excel-листов, переименование колонок, валидация, числовые/временные преобразования, quality flags |
-| `equipment_parse.py` | разбор поля `equipment`, словари кодов техники, построение вектора ресурсов и расстояния до нормативов |
-| `ranking.py` | operational расчет `rank_tz`; содержит текущую упрощенную схему по `equipment_count` и вспомогательный векторный путь |
-| `rank_tz_contract.py` | production/offline контракт модели `rank_tz`: feature sets, input schema, class mapping, preprocessor artifact |
+| `equipment_parse.py` | разбор поля `equipment`, canonical resource-vector helpers |
+| `normatives.py` | единый source of truth для нормативов рангов и hash/version норматива |
+| `ranking.py` | canonical vector-rank и auxiliary count-proxy logic |
+| `rank_tz_contract.py` | production/offline контракт модели `rank_tz`: semantic target, availability stages, feature sets, preprocessor artifact |
+| `model_selection.py` | leakage-safe split protocols (`group_shuffle`, `group_kfold`, `temporal_holdout`, legacy row split) |
+| `metrics.py` | metrics passport для rank classifier |
+| `cluster_analysis.py` | analyst-side cluster analysis block |
 | `model_train.py` | подготовка выборки, классические feature sets, обучение деревьев и лесов, CV-оценка, сохранение модели |
 | `predict.py` | Top-K прогноз, bootstrap confidence, resource quantiles, batch/result serialization |
 | `db.py` | SQLAlchemy-модели `Fire`, `Normative`, `LPRDecision`, `Model` и менеджер `DatabaseManager` |

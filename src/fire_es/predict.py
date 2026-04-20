@@ -20,6 +20,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from fire_es.model_train import FEATURE_SETS, prepare_data
+from fire_es.normatives import get_normative_rank_table, get_rank_label_map
 
 
 # ============================================================================
@@ -28,14 +29,7 @@ from fire_es.model_train import FEATURE_SETS, prepare_data
 
 # Маппинг классов rank_tz
 RANK_CLASSES = {1: 1.0, 2: 1.5, 3: 2.0, 4: 3.0, 5: 4.0, 6: 5.0}
-RANK_NAMES = {
-    1.0: "1",
-    1.5: "1-бис",
-    2.0: "2",
-    3.0: "3",
-    4.0: "4",
-    5.0: "5",
-}
+RANK_NAMES = get_rank_label_map()
 
 
 # ============================================================================
@@ -265,15 +259,11 @@ def rank_from_resources(
     Returns:
         ранг (float или Series)
     """
-    # Упрощённая нормативная таблица (количество техники по рангам)
-    # На основе данных из БД МЧС
+    table = normative_table if normative_table is not None else get_normative_rank_table()
     normative = {
-        1.0: 2,    # Ранг 1: 2 единицы техники
-        1.5: 2,    # Ранг 1-бис: 2 единицы
-        2.0: 3,    # Ранг 2: 3 единицы
-        3.0: 5,    # Ранг 3: 5 единиц
-        4.0: 8,    # Ранг 4: 8 единиц
-        5.0: 12,   # Ранг 5: 12 единиц
+        float(row["rank"]): float(row["min_equipment_count"])
+        for _, row in table.iterrows()
+        if row.get("min_equipment_count") is not None
     }
     
     if isinstance(resources, (int, float)):

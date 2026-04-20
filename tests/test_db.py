@@ -125,14 +125,14 @@ class TestNormative:
     def test_add_normative(self, db):
         """Тест добавления норматива."""
         session = db.get_session()
-        norm = Normative(rank=1, resource_type="AC", quantity=1)
+        baseline_count = session.query(Normative).count()
+        norm = Normative(rank=1, resource_type="TEST_AC", quantity=1)
         session.add(norm)
         session.commit()
-        session.close()
-        
         norms = session.query(Normative).all()
-        assert len(norms) == 1
-        assert norms[0].rank == 1
+        assert len(norms) == baseline_count + 1
+        assert any(item.resource_type == "TEST_AC" and item.rank == 1 for item in norms)
+        session.close()
 
 
 class TestLPRDecision:

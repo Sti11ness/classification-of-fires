@@ -53,7 +53,7 @@ class TrainModelViewModel:
         # Параметры обучения
         self.target = "rank_tz"
         self.model_type = "random_forest"  # 'decision_tree' или 'random_forest'
-        self.feature_set = "online_tactical"
+        self.feature_set = "dispatch_initial_safe"
         self.custom_features: List[str] = []
         self.test_size = 0.25
         self.class_weight = "balanced"
@@ -165,14 +165,18 @@ class TrainModelViewModel:
         """Получить доступные типы моделей."""
         return [
             {"value": "random_forest", "label": "Случайный лес (рекомендуется)"},
-            {"value": "decision_tree", "label": "Дерево решений"}
+            {"value": "decision_tree", "label": "Дерево решений"},
+            {"value": "gradient_boosting", "label": "HistGradientBoostingClassifier"},
         ]
 
     def get_available_feature_sets(self) -> List[Dict[str, str]]:
         """Получить доступные наборы признаков."""
         return [
+            {"value": "dispatch_initial_safe", "label": get_feature_set_spec("dispatch_initial_safe")["label"]},
+            {"value": "arrival_update_safe", "label": get_feature_set_spec("arrival_update_safe")["label"]},
+            {"value": "first_hose_update_safe", "label": get_feature_set_spec("first_hose_update_safe")["label"]},
             {"value": "online_tactical", "label": get_feature_set_spec("online_tactical")["label"]},
-            {"value": "extended", "label": get_feature_set_spec("extended")["label"]},
+            {"value": "retrospective_benchmark", "label": get_feature_set_spec("retrospective_benchmark")["label"]},
             {"value": "enhanced_tactical", "label": get_feature_set_spec("enhanced_tactical")["label"]},
             {"value": "custom", "label": "Custom (offline only)"},
         ]

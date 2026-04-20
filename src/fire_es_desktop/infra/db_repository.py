@@ -302,6 +302,14 @@ class DbRepository:
 
             decision.decision_rank = decision_rank
             decision.comment = comment
+            if decision.save_to_db:
+                fire = session.query(Fire).filter(Fire.id == decision.fire_id).first()
+                if fire:
+                    fire.rank_tz = decision_rank
+                    fire.rank_tz_vector = decision_rank
+                    fire.rank_label_source = "lpr_decision"
+                    fire.human_verified = True
+                    fire.usable_for_training = True
             session.commit()
             self.logger.info("Updated LPR decision: %s", decision_id)
             return True

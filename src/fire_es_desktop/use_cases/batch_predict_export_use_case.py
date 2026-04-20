@@ -140,6 +140,10 @@ class BatchPredictExportUseCase(BaseUseCase):
                     "model_id": model_info["model_id"],
                     "model_name": model_info.get("name", ""),
                     "deployment_role": model_info.get("deployment_role"),
+                    "semantic_target": model_info.get("semantic_target"),
+                    "availability_stage": model_info.get("availability_stage"),
+                    "split_protocol": model_info.get("split_protocol"),
+                    "event_overlap_rate": model_info.get("event_overlap_rate", 0.0),
                 }
                 for k in range(1, top_k + 1):
                     rank_key = f"top{k}_rank"
@@ -216,11 +220,7 @@ class BatchPredictExportUseCase(BaseUseCase):
             model_info = registry.get_model_info(model_id)
             if not model_info:
                 return None
-            if model_info.get("target") != "rank_tz":
-                return None
-            if model_info.get("deployment_role") != PRODUCTION_DEPLOYMENT_ROLE:
-                return None
-            if model_info.get("offline_only"):
+            if not registry.is_model_production_safe(model_info):
                 return None
             if not model_info.get("preprocessor_path"):
                 return None

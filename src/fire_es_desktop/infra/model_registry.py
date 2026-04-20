@@ -16,6 +16,17 @@ from datetime import datetime
 
 from .artifact_store import ArtifactStore
 
+PRODUCTION_ROLE_WHITELIST = {
+    "rank_tz_lpr_dispatch_production",
+    "rank_tz_lpr_arrival_production",
+    "rank_tz_lpr_first_hose_production",
+}
+PRODUCTION_SAFE_SPLITS = {
+    "group_shuffle",
+    "group_kfold",
+    "temporal_holdout",
+}
+
 
 class ModelRegistry:
     """
@@ -147,12 +158,9 @@ class ModelRegistry:
             self.logger.error(f"Model not found: {model_id}")
             return False
 
-        if (
-            model_info.get("target") == "rank_tz"
-            and model_info.get("deployment_role") != "rank_tz_lpr_production"
-        ):
+        if model_info.get("target") == "rank_tz" and not self.is_model_production_safe(model_info):
             self.logger.error(
-                "Refusing to activate non-production rank_tz model: %s (%s)",
+                "Refusing to activate unsafe rank_tz model: %s (%s)",
                 model_id,
                 model_info.get("deployment_role"),
             )
@@ -195,9 +203,35 @@ class ModelRegistry:
             return None
         if active.get("deployment_role") != deployment_role:
             return None
-        if active.get("offline_only"):
+        if not self.is_model_production_safe(active):
             return None
         return active
+
+    def is_model_production_safe(self, model_info: Dict[str, Any]) -> bool:
+        """Return whether a model can participate in the canonical LPR contour."""
+        if model_info.get("target") != "rank_tz":
+            return False
+        if model_info.get("offline_only"):
+            return False
+        if model_info.get("deployment_role") not in PRODUCTION_ROLE_WHITELIST:
+            return False
+        if model_info.get("availability_stage") == "retrospective":
+            return False
+        if model_info.get("semantic_target") != "rank_tz_vector":
+            return False
+        if model_info.get("split_protocol") not in PRODUCTION_SAFE_SPLITS:
+            return False
+        if float(model_info.get("event_overlap_rate", 1.0)) != 0.0:
+            return False
+        if not model_info.get("preprocessor_path"):
+            return False
+        if not model_info.get("training_schema_version"):
+            return False
+        if not model_info.get("normative_version"):
+            return False
+        if not model_info.get("input_schema"):
+            return False
+        return True
 
     def delete_model(self, model_id: str) -> None:
         """

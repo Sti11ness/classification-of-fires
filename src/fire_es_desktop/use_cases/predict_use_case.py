@@ -21,7 +21,13 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "fire_es"))
 
 from fire_es.predict import RANK_NAMES, predict_with_confidence
-from fire_es.rank_tz_contract import PRODUCTION_DEPLOYMENT_ROLE, apply_preprocessor_artifact
+from fire_es.rank_tz_contract import (
+    AVAILABILITY_STAGE_RETROSPECTIVE,
+    PRODUCTION_DEPLOYMENT_ROLE,
+    SEMANTIC_TARGET_RANK_TZ_VECTOR,
+    apply_preprocessor_artifact,
+)
+from fire_es.normatives import get_normative_rank_table
 
 logger = logging.getLogger("PredictUseCase")
 
@@ -143,6 +149,14 @@ class PredictUseCase(BaseUseCase):
                     "model_id": model_info["model_id"],
                     "model_name": model_info.get("name", ""),
                     "deployment_role": model_info.get("deployment_role"),
+                    "semantic_target": model_info.get("semantic_target"),
+                    "label_source_policy": model_info.get("label_source_policy", []),
+                    "availability_stage": model_info.get("availability_stage"),
+                    "split_protocol": model_info.get("split_protocol"),
+                    "event_overlap_rate": model_info.get("event_overlap_rate", 0.0),
+                    "metric_primary": model_info.get("metric_primary"),
+                    "normative_version": model_info.get("normative_version"),
+                    "calibration_status": model_info.get("calibration_status", "not_calibrated"),
                     "input_schema": preprocessor_artifact.get("input_schema", []),
                     "input_data": input_data,
                     "top_k_ranks": top_k_ranks,
@@ -150,6 +164,7 @@ class PredictUseCase(BaseUseCase):
                     "entropy": entropy,
                     "induced_rank_p50": induced_rank,
                     "all_probabilities": all_probabilities,
+                    "warnings": self._build_model_warnings(model_info, confidence, entropy),
                 },
                 warnings=warnings,
             )
@@ -166,26 +181,12 @@ class PredictUseCase(BaseUseCase):
 
     def get_normative_table(self) -> pd.DataFrame:
         """Return a lightweight rank reference table for the UI."""
-        return pd.DataFrame(
-            {
-                "rank": ["1", "1-бис", "2", "3", "4", "5"],
-                "rank_name": [
-                    "Ранг 1",
-                    "Ранг 1-бис",
-                    "Ранг 2",
-                    "Ранг 3",
-                    "Ранг 4",
-                    "Ранг 5",
-                ],
-                "equipment_count": [2, 2, 3, 5, 8, 12],
-                "description": [
-                    "Минимальный",
-                    "Минимальный усиленный",
-                    "Средний",
-                    "Повышенный",
-                    "Высокий",
-                    "Максимальный",
-                ],
+        table = get_normative_rank_table()
+        return table.rename(
+            columns={
+                "label": "rank_name",
+                "display_name": "rank_display_name",
+                "min_equipment_count": "equipment_count",
             }
         )
 
@@ -197,15 +198,32 @@ class PredictUseCase(BaseUseCase):
             model_info = registry.get_model_info(model_id)
             if not model_info:
                 return None
-            if model_info.get("target") != "rank_tz":
-                return None
-            if model_info.get("deployment_role") != PRODUCTION_DEPLOYMENT_ROLE:
-                return None
-            if model_info.get("offline_only"):
-                return None
-            return model_info
+            return model_info if registry.is_model_production_safe(model_info) else None
 
         return registry.get_active_model_for_role(
             target="rank_tz",
             deployment_role=PRODUCTION_DEPLOYMENT_ROLE,
         )
+
+    def _build_model_warnings(
+        self,
+        model_info: dict[str, Any],
+        confidence: float,
+        entropy: float,
+    ) -> list[str]:
+        warnings: list[str] = []
+        if model_info.get("semantic_target") != SEMANTIC_TARGET_RANK_TZ_VECTOR:
+            warnings.append("Модель не относится к canonical rank_tz_vector contour")
+        if model_info.get("availability_stage") == AVAILABILITY_STAGE_RETROSPECTIVE:
+            warnings.append("Retrospective model cannot be used as operational LPR model")
+        if model_info.get("event_overlap_rate", 0.0) != 0.0:
+            warnings.append("Model was evaluated with non-zero event overlap")
+        if model_info.get("split_protocol") == "row_random_legacy":
+            warnings.append("Legacy row-random split is not leakage-safe")
+        if confidence < 0.5:
+            warnings.append("Low model confidence")
+        if entropy > 1.2:
+            warnings.append("High predictive entropy")
+        if model_info.get("calibration_status") in (None, "not_calibrated"):
+            warnings.append("Probabilities are not calibrated")
+        return warnings

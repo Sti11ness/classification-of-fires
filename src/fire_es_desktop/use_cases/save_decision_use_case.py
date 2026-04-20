@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import pandas as pd
+
 from .base_use_case import BaseUseCase, UseCaseResult, UseCaseStatus
 
 logger = logging.getLogger("SaveDecisionUseCase")
@@ -50,6 +52,7 @@ class SaveDecisionUseCase(BaseUseCase):
         decision_rank: str,
         decision_comment: str = "",
         user_id: str = "LPR",
+        save_to_db: bool = True,
     ) -> UseCaseResult:
         """
         Сохранить решение ЛПР.
@@ -106,6 +109,7 @@ class SaveDecisionUseCase(BaseUseCase):
             self.report_progress(2, 3, "Запись решения в БД")
             self.check_cancelled()
 
+            from fire_es.cleaning import build_event_identity
             from fire_es.db import DatabaseManager, Fire, LPRDecision
 
             db = DatabaseManager(str(self.db_path))
@@ -126,7 +130,12 @@ class SaveDecisionUseCase(BaseUseCase):
                 "fire_date": now,
                 "year": now.year,
                 "month": now.month,
-                "rank_tz": predicted_rank,
+                "rank_tz": decision_rank_value if save_to_db else None,
+                "rank_tz_vector": decision_rank_value if save_to_db else None,
+                "rank_label_source": "lpr_decision" if save_to_db else None,
+                "human_verified": bool(save_to_db),
+                "usable_for_training": bool(save_to_db),
+                "predicted_rank_at_decision": predicted_rank,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -166,13 +175,15 @@ class SaveDecisionUseCase(BaseUseCase):
                 "t_first_hose_min",
                 "t_contained_min",
                 "t_extinguished_min",
-                "equipment_count",
-                "nozzle_count",
-                "rank_tz",
-                "rank_distance",
-                "rank_ref",
-                "severity_score",
-            }
+                    "equipment_count",
+                    "nozzle_count",
+                    "rank_tz",
+                    "rank_tz_vector",
+                    "rank_distance",
+                    "rank_ref",
+                    "severity_score",
+                    "predicted_rank_at_decision",
+                }
             bool_like_fields = {
                 "flag_date_outlier",
                 "flag_floor_outlier",
@@ -196,6 +207,20 @@ class SaveDecisionUseCase(BaseUseCase):
                 else:
                     fire_payload[key] = value
 
+            identity_df = build_event_identity(pd.DataFrame([fire_payload]))
+            identity_row = identity_df.iloc[0].to_dict()
+            for key in [
+                "event_id",
+                "event_fingerprint",
+                "duplicate_group_id",
+                "is_canonical_event_record",
+                "source_priority",
+                "duplicate_policy",
+                "event_id_low_confidence",
+            ]:
+                if key in fire_columns:
+                    fire_payload[key] = identity_row.get(key)
+
             session = db.get_session()
             try:
                 fire = Fire(**fire_payload)
@@ -212,7 +237,7 @@ class SaveDecisionUseCase(BaseUseCase):
                     predicted_rank=predicted_rank,
                     predicted_probabilities=top_k,
                     comment=decision_comment,
-                    save_to_db=True,
+                    save_to_db=save_to_db,
                     created_at=now,
                 )
                 session.add(decision)

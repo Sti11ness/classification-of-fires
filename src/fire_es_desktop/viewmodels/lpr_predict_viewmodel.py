@@ -47,6 +47,7 @@ class PredictState:
     entropy: float = 0.0
     induced_rank: Optional[str] = None
     model_info: Dict[str, str] = field(default_factory=dict)
+    model_warnings: List[str] = field(default_factory=list)
 
     # Решение ЛПР
     selected_rank: Optional[str] = None
@@ -158,8 +159,14 @@ class LPRPredictViewModel:
                 self.state.induced_rank = data.get("induced_rank_p50")
                 self.state.model_info = {
                     "model_id": data.get("model_id", ""),
-                    "model_name": data.get("model_name", "")
+                    "model_name": data.get("model_name", ""),
+                    "semantic_target": data.get("semantic_target", ""),
+                    "availability_stage": data.get("availability_stage", ""),
+                    "split_protocol": data.get("split_protocol", ""),
+                    "normative_version": data.get("normative_version", ""),
+                    "calibration_status": data.get("calibration_status", ""),
                 }
+                self.state.model_warnings = data.get("warnings", [])
                 self.state.status_message = "Прогноз выполнен успешно"
 
                 # Callback

@@ -15,10 +15,15 @@ from typing import Any, Optional
 
 from sqlalchemy import (
     Column, Integer, Float, String, DateTime, Boolean, Text, JSON,
-    create_engine, ForeignKey, UniqueConstraint
+    create_engine, ForeignKey, UniqueConstraint, inspect, text
 )
 from sqlalchemy.orm import (
     Session, declarative_base, relationship, sessionmaker
+)
+
+from .normatives import (
+    get_normative_rank_table,
+    load_rank_resource_normatives,
 )
 
 # Базовый класс для моделей
@@ -43,7 +48,8 @@ class Fire(Base):
     row_id = Column(Integer, index=True)  # Исходный ID строки
     source_sheet = Column(String(100))  # Источник (лист Excel)
     source_period = Column(String(50))  # Период
-    
+    source_file = Column(String(500))  # Исходный файл
+
     # Раздел I: Общие сведения
     region_code = Column(Integer)  # Код региона
     region_text = Column(String(200))  # Текст региона
@@ -64,6 +70,15 @@ class Fire(Base):
     distance_to_station = Column(Float)  # Расстояние до пожарной части
     object_name = Column(String(500))  # Наименование объекта
     address = Column(String(500))  # Адрес
+
+    # Event identity / duplicate handling
+    event_id = Column(String(128), index=True)
+    event_fingerprint = Column(String(512))
+    duplicate_group_id = Column(String(128), index=True)
+    is_canonical_event_record = Column(Boolean, default=True)
+    source_priority = Column(Integer, default=0)
+    duplicate_policy = Column(String(64))
+    event_id_low_confidence = Column(Boolean, default=False)
     
     # Раздел III: Последствия
     fatalities = Column(Integer)  # Погибло
@@ -98,8 +113,16 @@ class Fire(Base):
     # Ранг (ТЗ п.2.5.1)
     rank_tz = Column(Float)  # Ранг по ТЗ
     rank_distance = Column(Float)  # Расстояние до норматива
+    rank_tz_vector = Column(Float)  # Canonical semantic target for mode 2.5.1
+    rank_tz_count_proxy = Column(Float)  # Auxiliary legacy proxy label
     rank_ref = Column(Float)  # Исследовательский ранг (severity)
     severity_score = Column(Float)  # Severity score
+    rank_label_source = Column(String(64))
+    rank_normative_version = Column(String(64))
+    rank_quality_flags = Column(Text)
+    human_verified = Column(Boolean, default=False)
+    usable_for_training = Column(Boolean, default=False)
+    predicted_rank_at_decision = Column(Float)
     
     # Флаги качества
     flag_date_outlier = Column(Boolean, default=False)
@@ -136,8 +159,12 @@ class Normative(Base):
     rank = Column(Float, nullable=False, index=True)  # Ранг (1, 1.5, 2, 3, 4, 5)
     resource_type = Column(String(50), nullable=False)  # Тип ресурса (AC, AL, APS...)
     quantity = Column(Integer, nullable=False)  # Количество
-    
+
     description = Column(String(500))  # Описание
+    label = Column(String(50))
+    sort_order = Column(Integer, default=0)
+    min_equipment_count = Column(Integer)
+    normative_version = Column(String(64))
     is_active = Column(Boolean, default=True)  # Актуальность
     
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -154,6 +181,10 @@ class Normative(Base):
             "resource_type": self.resource_type,
             "quantity": self.quantity,
             "description": self.description,
+            "label": self.label,
+            "sort_order": self.sort_order,
+            "min_equipment_count": self.min_equipment_count,
+            "normative_version": self.normative_version,
             "is_active": self.is_active,
         }
 
@@ -279,6 +310,8 @@ class DatabaseManager:
     def create_tables(self):
         """Создание всех таблиц."""
         Base.metadata.create_all(bind=self.engine)
+        self._ensure_schema_migrations()
+        self._seed_normatives_if_empty()
         
     def drop_tables(self):
         """Удаление всех таблиц."""
@@ -291,6 +324,94 @@ class DatabaseManager:
     def close(self) -> None:
         """Закрыть подключения SQLAlchemy engine."""
         self.engine.dispose()
+
+    def _ensure_schema_migrations(self) -> None:
+        """Apply additive schema migrations required by the desktop runtime."""
+        fire_columns = {
+            "source_file": "TEXT",
+            "event_id": "TEXT",
+            "event_fingerprint": "TEXT",
+            "duplicate_group_id": "TEXT",
+            "is_canonical_event_record": "BOOLEAN DEFAULT 1",
+            "source_priority": "INTEGER DEFAULT 0",
+            "duplicate_policy": "TEXT",
+            "event_id_low_confidence": "BOOLEAN DEFAULT 0",
+            "rank_tz_vector": "REAL",
+            "rank_tz_count_proxy": "REAL",
+            "rank_label_source": "TEXT",
+            "rank_normative_version": "TEXT",
+            "rank_quality_flags": "TEXT",
+            "human_verified": "BOOLEAN DEFAULT 0",
+            "usable_for_training": "BOOLEAN DEFAULT 0",
+            "predicted_rank_at_decision": "REAL",
+        }
+        norm_columns = {
+            "label": "TEXT",
+            "sort_order": "INTEGER DEFAULT 0",
+            "min_equipment_count": "INTEGER",
+            "normative_version": "TEXT",
+        }
+        self._ensure_columns("fires", fire_columns)
+        self._ensure_columns("normatives", norm_columns)
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_fires_event_id ON fires(event_id)")
+            )
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_fires_duplicate_group_id ON fires(duplicate_group_id)")
+            )
+
+    def _ensure_columns(self, table_name: str, columns: dict[str, str]) -> None:
+        inspector = inspect(self.engine)
+        if table_name not in inspector.get_table_names():
+            return
+        existing = {column["name"] for column in inspector.get_columns(table_name)}
+        with self.engine.begin() as conn:
+            for name, ddl in columns.items():
+                if name in existing:
+                    continue
+                conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {ddl}"))
+
+    def _seed_normatives_if_empty(self) -> None:
+        """Load canonical normatives into SQLite when the table is empty."""
+        payload = load_rank_resource_normatives()
+        rank_table = get_normative_rank_table(payload)
+        with self.engine.begin() as conn:
+            total = conn.execute(text("SELECT COUNT(*) FROM normatives")).scalar() or 0
+            if total:
+                return
+            rows = []
+            for _, row in rank_table.iterrows():
+                resource_vector = row["resource_vector"] or {}
+                for resource_type, quantity in resource_vector.items():
+                    rows.append(
+                        {
+                            "rank": float(row["rank"]),
+                            "resource_type": str(resource_type),
+                            "quantity": int(quantity),
+                            "description": row["description"],
+                            "label": row["label"],
+                            "sort_order": int(row["sort_order"]),
+                            "min_equipment_count": (
+                                int(row["min_equipment_count"])
+                                if row["min_equipment_count"] is not None
+                                else None
+                            ),
+                            "normative_version": payload["normative_version"],
+                            "is_active": True,
+                            "created_at": datetime.utcnow(),
+                        }
+                    )
+            if rows:
+                conn.execute(
+                    text(
+                        "INSERT INTO normatives (rank, resource_type, quantity, description, label, "
+                        "sort_order, min_equipment_count, normative_version, is_active, created_at) "
+                        "VALUES (:rank, :resource_type, :quantity, :description, :label, :sort_order, "
+                        ":min_equipment_count, :normative_version, :is_active, :created_at)"
+                    ),
+                    rows,
+                )
     
     # ========================================================================
     # CRUD для Fire

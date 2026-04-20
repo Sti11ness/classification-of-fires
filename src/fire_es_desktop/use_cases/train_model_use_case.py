@@ -1,6 +1,6 @@
 # src/fire_es_desktop/use_cases/train_model_use_case.py
 """
-TrainModelUseCase — training and artifact packaging for rank_tz models.
+TrainModelUseCase — leakage-safe training and artifact packaging for rank_tz models.
 """
 
 from __future__ import annotations
@@ -14,25 +14,33 @@ from typing import Any, Optional
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.inspection import permutation_importance
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
-from sklearn.model_selection import train_test_split
-from sklearn.tree import DecisionTreeClassifier
-from sqlalchemy import text
+from sklearn.tree import DecisionTreeClassifier, export_text
 
 from .base_use_case import BaseUseCase, UseCaseResult, UseCaseStatus
 
-# Import from domain layer
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "fire_es"))
 
-from fire_es.db import DatabaseManager
+from fire_es.metrics import build_classification_metrics
+from fire_es.model_selection import (
+    SPLIT_PROTOCOL_GROUP_KFOLD,
+    SPLIT_PROTOCOL_GROUP_SHUFFLE,
+    SPLIT_PROTOCOL_ROW_RANDOM_LEGACY,
+    SPLIT_PROTOCOL_TEMPORAL_HOLDOUT,
+    split_dataset,
+)
+from fire_es.normatives import get_normative_hash, load_rank_resource_normatives
 from fire_es.rank_tz_contract import (
     CLASS_TO_RANK_MAP,
     OFFLINE_DEPLOYMENT_ROLE,
     PRODUCTION_DEPLOYMENT_ROLE,
+    AVAILABILITY_STAGE_DISPATCH,
+    SEMANTIC_TARGET_RANK_TZ_COUNT_PROXY,
+    SEMANTIC_TARGET_RANK_TZ_VECTOR,
     add_rank_tz_engineered_features,
     apply_preprocessor_artifact,
     build_preprocessor_artifact,
@@ -41,12 +49,19 @@ from fire_es.rank_tz_contract import (
     get_feature_set_spec,
     map_rank_series_to_classes,
 )
+from fire_es.db import DatabaseManager
 
 logger = logging.getLogger("TrainModelUseCase")
 
 
+LABEL_COLUMN_BY_TARGET = {
+    SEMANTIC_TARGET_RANK_TZ_VECTOR: "rank_tz_vector",
+    SEMANTIC_TARGET_RANK_TZ_COUNT_PROXY: "rank_tz_count_proxy",
+}
+
+
 class TrainModelUseCase(BaseUseCase):
-    """Training flow for rank_tz models with a shared preprocessing contract."""
+    """Training flow for canonical rank_tz models with a shared preprocessing contract."""
 
     def __init__(self, db_path: Path, models_path: Path):
         super().__init__(
@@ -60,10 +75,19 @@ class TrainModelUseCase(BaseUseCase):
         self,
         target: str = "rank_tz",
         model_type: str = "random_forest",
-        feature_set: str = "online_tactical",
+        feature_set: str = "dispatch_initial_safe",
         custom_features: Optional[list[str]] = None,
         test_size: float = 0.25,
         class_weight: Optional[str] = "balanced",
+        *,
+        semantic_target: str = SEMANTIC_TARGET_RANK_TZ_VECTOR,
+        availability_stage: Optional[str] = None,
+        split_protocol: str = SPLIT_PROTOCOL_GROUP_SHUFFLE,
+        canonical_only: bool = True,
+        metric_primary: str = "f1_macro",
+        allow_proxy_target: bool = False,
+        allow_legacy_random_split: bool = False,
+        calibration_method: Optional[str] = None,
     ) -> UseCaseResult:
         self.status = UseCaseStatus.RUNNING
         self._cancel_requested = False
@@ -76,44 +100,66 @@ class TrainModelUseCase(BaseUseCase):
                 warnings=warnings,
             )
 
+        if semantic_target == SEMANTIC_TARGET_RANK_TZ_COUNT_PROXY and not allow_proxy_target:
+            return UseCaseResult(
+                success=False,
+                message="Auxiliary count proxy target requires allow_proxy_target=True",
+                warnings=warnings,
+            )
+        if split_protocol == SPLIT_PROTOCOL_ROW_RANDOM_LEGACY and not allow_legacy_random_split:
+            return UseCaseResult(
+                success=False,
+                message="Legacy row-random split requires allow_legacy_random_split=True",
+                warnings=warnings,
+            )
+
         db = DatabaseManager(str(self.db_path))
         random_state = 42
 
         try:
-            self.report_progress(1, 6, "Загрузка данных из БД")
+            self.report_progress(1, 7, "Загрузка данных из БД")
             self.check_cancelled()
 
-            df = pd.read_sql(f"SELECT * FROM fires WHERE {target} IS NOT NULL", db.engine)
-            if df.empty:
-                auto_labeled = self._auto_assign_rank_tz(db)
-                if auto_labeled > 0:
-                    warnings.append(
-                        f"rank_tz отсутствовал, автоматически размечено {auto_labeled} записей"
-                    )
-                    df = pd.read_sql(f"SELECT * FROM fires WHERE {target} IS NOT NULL", db.engine)
+            label_column = LABEL_COLUMN_BY_TARGET.get(semantic_target)
+            if not label_column:
+                return UseCaseResult(
+                    success=False,
+                    message=f"Неподдерживаемый semantic_target: {semantic_target}",
+                    warnings=warnings,
+                )
 
+            query = (
+                "SELECT * FROM fires "
+                f"WHERE {label_column} IS NOT NULL "
+                "AND COALESCE(usable_for_training, 0) = 1"
+            )
+            if canonical_only:
+                query += " AND COALESCE(is_canonical_event_record, 1) = 1"
+            df = pd.read_sql(query, db.engine)
             if df.empty:
                 return UseCaseResult(
                     success=False,
-                    message="Нет данных с целевой переменной rank_tz",
+                    message="Нет обучающей целевой переменной. Сначала выполните AssignRankTzUseCase.",
                     warnings=warnings,
                 )
 
             spec = self._resolve_feature_spec(feature_set, custom_features)
+            availability_stage = availability_stage or spec.get("availability_stage", AVAILABILITY_STAGE_DISPATCH)
             df = add_rank_tz_engineered_features(df, spec["feature_set"])
 
-            self.report_progress(2, 6, "Подготовка признаков и target")
+            self.report_progress(2, 7, "Подготовка признаков и target")
             self.check_cancelled()
 
             raw_X = ensure_feature_frame(df, spec["feature_order"])
-            y = map_rank_series_to_classes(df[target])
+            y = map_rank_series_to_classes(df[label_column])
             valid_mask = y.notna()
             if (~valid_mask).any():
                 warnings.append(
-                    f"Пропущено {int((~valid_mask).sum())} записей с неподдерживаемым rank_tz"
+                    f"Пропущено {int((~valid_mask).sum())} записей с неподдерживаемым рангом"
                 )
-            raw_X = raw_X.loc[valid_mask].copy()
-            y = y.loc[valid_mask].astype(int)
+            df = df.loc[valid_mask].reset_index(drop=True)
+            raw_X = raw_X.loc[valid_mask].reset_index(drop=True)
+            y = y.loc[valid_mask].astype(int).reset_index(drop=True)
 
             if raw_X.empty or y.empty:
                 return UseCaseResult(
@@ -121,7 +167,6 @@ class TrainModelUseCase(BaseUseCase):
                     message="Нет данных после подготовки rank_tz",
                     warnings=warnings,
                 )
-
             if y.nunique() < 2:
                 return UseCaseResult(
                     success=False,
@@ -129,13 +174,34 @@ class TrainModelUseCase(BaseUseCase):
                     warnings=warnings,
                 )
 
-            X_train_raw, X_test_raw, y_train, y_test = train_test_split(
-                raw_X,
-                y,
+            self.report_progress(3, 7, "Leakage-safe split")
+            self.check_cancelled()
+
+            split_result = split_dataset(
+                df,
+                y=y,
+                split_protocol=split_protocol,
                 test_size=test_size,
                 random_state=random_state,
-                stratify=y,
             )
+            split_meta = split_result.metadata
+            if split_meta.get("event_overlap_rate", 0.0) != 0.0 and split_protocol != SPLIT_PROTOCOL_ROW_RANDOM_LEGACY:
+                return UseCaseResult(
+                    success=False,
+                    message="Нечестный split: event_overlap_rate должен быть равен 0",
+                    warnings=warnings,
+                )
+
+            X_train_raw = raw_X.iloc[split_result.train_indices].reset_index(drop=True)
+            X_test_raw = raw_X.iloc[split_result.test_indices].reset_index(drop=True)
+            y_train = y.iloc[split_result.train_indices].reset_index(drop=True)
+            y_test = y.iloc[split_result.test_indices].reset_index(drop=True)
+            train_rows = df.iloc[split_result.train_indices].reset_index(drop=True)
+            test_rows = df.iloc[split_result.test_indices].reset_index(drop=True)
+
+            label_source_policy = sorted(
+                {str(value) for value in df["rank_label_source"].dropna().tolist()}
+            ) or [None]
 
             preprocessor_artifact, X_train = build_preprocessor_artifact(
                 X_train_raw,
@@ -146,37 +212,70 @@ class TrainModelUseCase(BaseUseCase):
                 training_rows=len(raw_X),
                 test_size=test_size,
                 random_state=random_state,
+                semantic_target=semantic_target,
+                label_source_policy=[value for value in label_source_policy if value],
             )
             X_test = apply_preprocessor_artifact(X_test_raw, preprocessor_artifact)
 
-            self.report_progress(3, 6, f"Обучение модели ({model_type})")
+            self.report_progress(4, 7, f"Обучение модели ({model_type})")
             self.check_cancelled()
 
-            model = self._fit_model(
+            model, calibration_status = self._fit_model(
                 model_type=model_type,
                 X_train=X_train,
                 y_train=y_train,
                 class_weight=class_weight,
                 random_state=random_state,
+                calibration_method=calibration_method,
             )
 
             y_pred = model.predict(X_test)
-            metrics = self._build_metrics(model, y_train, y_test, y_pred)
+            y_proba = model.predict_proba(X_test)
+            metrics = build_classification_metrics(
+                y_train=y_train,
+                y_test=y_test,
+                y_pred=y_pred,
+                y_proba=y_proba,
+                classes=np.array(sorted(model.classes_.tolist())),
+                class_to_rank_map=CLASS_TO_RANK_MAP,
+                split_metadata=split_meta,
+            )
+            metrics["model_type"] = model.__class__.__name__
+            metrics["n_estimators"] = int(getattr(model, "n_estimators", 1))
+            metrics["calibration_status"] = calibration_status
+            metrics["metric_primary"] = metric_primary
 
-            self.report_progress(4, 6, "Расчет importance и benchmark")
+            self.report_progress(5, 7, "Расчет importance и benchmark")
             self.check_cancelled()
 
             importance_df = self._build_feature_importance(model, X_test, y_test)
+            tree_artifact_name = None
+            if model_type == "decision_tree":
+                tree_artifact_name = self._export_decision_tree(model, preprocessor_artifact["feature_names_out"])
+
             missingness = (raw_X.isna().mean() * 100).round(4).sort_values(ascending=False)
+            normative_payload = load_rank_resource_normatives()
+            class_distribution_train = y_train.value_counts(normalize=True).sort_index().to_dict()
+            class_distribution_test = y_test.value_counts(normalize=True).sort_index().to_dict()
             benchmark_payload = {
                 "model_type": model.__class__.__name__,
                 "feature_set": spec["feature_set"],
+                "availability_stage": availability_stage,
                 "deployment_role": spec["deployment_role"],
                 "offline_only": spec["offline_only"],
+                "semantic_target": semantic_target,
+                "label_source_policy": [value for value in label_source_policy if value],
                 "training_rows": int(len(raw_X)),
                 "test_rows": int(len(X_test)),
                 "metrics": metrics,
+                "split_protocol": split_protocol,
+                "canonical_only": canonical_only,
+                "duplicate_policy": "canonical_event_only" if canonical_only else "all_rows",
+                "normative_version": normative_payload["normative_version"],
+                "normative_hash": get_normative_hash(normative_payload),
                 "missing_pct_top20": missingness.head(20).to_dict(),
+                "class_distribution_train": class_distribution_train,
+                "class_distribution_test": class_distribution_test,
                 "impurity_importance_top20": (
                     importance_df.sort_values("impurity_importance", ascending=False)
                     .head(20)
@@ -193,13 +292,13 @@ class TrainModelUseCase(BaseUseCase):
                 ),
             }
 
-            self.report_progress(5, 6, "Сохранение артефактов")
+            self.report_progress(6, 7, "Сохранение артефактов")
             self.check_cancelled()
 
             self.models_path.mkdir(parents=True, exist_ok=True)
             model_id = str(uuid.uuid4())[:8]
             timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-            model_name = f"{model_type}_{target}_{timestamp}"
+            model_name = f"{model_type}_{semantic_target}_{timestamp}"
 
             model_path = self.models_path / f"model_{model_id}.joblib"
             metadata_path = self.models_path / f"model_{model_id}_meta.json"
@@ -221,27 +320,56 @@ class TrainModelUseCase(BaseUseCase):
                 "model_name": model_name,
                 "model_type": model_type,
                 "target": target,
+                "semantic_target": semantic_target,
+                "target_definition": semantic_target,
+                "label_source_policy": [value for value in label_source_policy if value],
                 "feature_set": spec["feature_set"],
+                "availability_stage": availability_stage,
                 "features": spec["feature_order"],
+                "feature_names_out": preprocessor_artifact["feature_names_out"],
                 "input_schema": preprocessor_artifact["input_schema"],
                 "fill_strategy": preprocessor_artifact["fill_strategy"],
                 "fill_values": preprocessor_artifact["fill_values"],
                 "allowed_missing": preprocessor_artifact["allowed_missing"],
                 "class_mapping": preprocessor_artifact["class_mapping"],
                 "training_schema_version": preprocessor_artifact["schema_version"],
+                "preprocessing_version": preprocessor_artifact.get("preprocessing_version", 2),
                 "deployment_role": spec["deployment_role"],
                 "offline_only": spec["offline_only"],
                 "metrics": metrics,
+                "metric_primary": metric_primary,
                 "params": {
                     "test_size": test_size,
                     "class_weight": class_weight,
                     "random_state": random_state,
+                    "split_protocol": split_protocol,
+                    "canonical_only": canonical_only,
+                    "allow_proxy_target": allow_proxy_target,
+                    "allow_legacy_random_split": allow_legacy_random_split,
+                    "calibration_method": calibration_method,
                 },
                 "dataset_info": {
                     "samples": int(len(raw_X)),
                     "features_count": int(len(spec["feature_order"])),
                     "classes": [str(value) for value in sorted(y.unique().tolist())],
+                    "canonical_only": canonical_only,
+                    "class_distribution_train": class_distribution_train,
+                    "class_distribution_test": class_distribution_test,
                 },
+                "split_protocol": split_protocol,
+                "event_id_column": split_meta.get("event_id_column"),
+                "event_overlap_rate": split_meta.get("event_overlap_rate"),
+                "train_event_count": split_meta.get("train_event_count"),
+                "test_event_count": split_meta.get("test_event_count"),
+                "train_date_min": split_meta.get("train_date_min"),
+                "train_date_max": split_meta.get("train_date_max"),
+                "test_date_min": split_meta.get("test_date_min"),
+                "test_date_max": split_meta.get("test_date_max"),
+                "duplicate_policy": "canonical_event_only" if canonical_only else "all_rows",
+                "canonical_only": canonical_only,
+                "normative_version": normative_payload["normative_version"],
+                "normative_hash": get_normative_hash(normative_payload),
+                "calibration_status": calibration_status,
                 "created_at": pd.Timestamp.now().isoformat(),
                 "artifact_path": model_path.name,
                 "metadata_path": metadata_path.name,
@@ -250,10 +378,12 @@ class TrainModelUseCase(BaseUseCase):
                 "benchmark_path": benchmark_path.name,
                 "feature_importance_path": importance_path.name,
             }
+            if tree_artifact_name:
+                metadata["tree_artifact_path"] = tree_artifact_name
             with open(metadata_path, "w", encoding="utf-8") as f:
                 json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-            self.report_progress(6, 6, "Обучение завершено")
+            self.report_progress(7, 7, "Обучение завершено")
 
             registry_extra = {
                 "artifact_path": model_path.name,
@@ -265,13 +395,25 @@ class TrainModelUseCase(BaseUseCase):
                 "deployment_role": spec["deployment_role"],
                 "offline_only": spec["offline_only"],
                 "feature_set": spec["feature_set"],
+                "availability_stage": availability_stage,
                 "input_schema": preprocessor_artifact["input_schema"],
                 "fill_strategy": preprocessor_artifact["fill_strategy"],
                 "fill_values": preprocessor_artifact["fill_values"],
                 "allowed_missing": preprocessor_artifact["allowed_missing"],
                 "class_mapping": preprocessor_artifact["class_mapping"],
                 "training_schema_version": preprocessor_artifact["schema_version"],
+                "preprocessing_version": preprocessor_artifact.get("preprocessing_version", 2),
+                "semantic_target": semantic_target,
+                "target_definition": semantic_target,
+                "label_source_policy": [value for value in label_source_policy if value],
+                "split_protocol": split_protocol,
+                "event_overlap_rate": split_meta.get("event_overlap_rate"),
+                "metric_primary": metric_primary,
+                "normative_version": normative_payload["normative_version"],
+                "calibration_status": calibration_status,
             }
+            if tree_artifact_name:
+                registry_extra["tree_artifact_path"] = tree_artifact_name
 
             return UseCaseResult(
                 success=True,
@@ -286,10 +428,11 @@ class TrainModelUseCase(BaseUseCase):
                     "feature_importance_path": str(importance_path),
                     "metrics": metrics,
                     "feature_names": spec["feature_order"],
+                    "feature_names_out": preprocessor_artifact["feature_names_out"],
                     "samples": int(len(raw_X)),
                     "deployment_role": spec["deployment_role"],
                     "offline_only": spec["offline_only"],
-                    "can_activate": not spec["offline_only"],
+                    "can_activate": (not spec["offline_only"]) and semantic_target == SEMANTIC_TARGET_RANK_TZ_VECTOR,
                     "registry_extra": registry_extra,
                 },
                 warnings=warnings,
@@ -320,6 +463,7 @@ class TrainModelUseCase(BaseUseCase):
                 "feature_order": custom_features,
                 "deployment_role": OFFLINE_DEPLOYMENT_ROLE,
                 "offline_only": True,
+                "availability_stage": "retrospective",
                 "default_fill_strategy": "median",
                 "default_fill_value": None,
             }
@@ -333,7 +477,8 @@ class TrainModelUseCase(BaseUseCase):
         y_train: pd.Series,
         class_weight: Optional[str],
         random_state: int,
-    ) -> DecisionTreeClassifier | RandomForestClassifier:
+        calibration_method: Optional[str],
+    ) -> tuple[Any, str]:
         if model_type == "decision_tree":
             model = DecisionTreeClassifier(
                 max_depth=10,
@@ -352,47 +497,28 @@ class TrainModelUseCase(BaseUseCase):
                 class_weight=class_weight,
                 n_jobs=-1,
             )
+        elif model_type == "gradient_boosting":
+            model = HistGradientBoostingClassifier(
+                max_depth=8,
+                learning_rate=0.05,
+                max_iter=300,
+                random_state=random_state,
+            )
         else:
             raise ValueError(f"Неизвестный тип модели: {model_type}")
 
         model.fit(X_train, y_train)
-        return model
-
-    def _build_metrics(
-        self,
-        model: DecisionTreeClassifier | RandomForestClassifier,
-        y_train: pd.Series,
-        y_test: pd.Series,
-        y_pred: np.ndarray,
-    ) -> dict[str, Any]:
-        cm = confusion_matrix(y_test, y_pred, labels=sorted(model.classes_.tolist()))
-        per_class_recall = {}
-        for idx, class_id in enumerate(sorted(model.classes_.tolist())):
-            total = cm[idx].sum()
-            recall_value = float(cm[idx, idx] / total) if total else 0.0
-            per_class_recall[str(CLASS_TO_RANK_MAP.get(class_id, class_id))] = recall_value
-
-        return {
-            "accuracy": float(accuracy_score(y_test, y_pred)),
-            "precision": float(precision_score(y_test, y_pred, average="weighted", zero_division=0)),
-            "recall": float(recall_score(y_test, y_pred, average="weighted", zero_division=0)),
-            "f1": float(f1_score(y_test, y_pred, average="weighted", zero_division=0)),
-            "f1_weighted": float(f1_score(y_test, y_pred, average="weighted", zero_division=0)),
-            "f1_macro": float(f1_score(y_test, y_pred, average="macro", zero_division=0)),
-            "train_size": int(len(y_train)),
-            "test_size": int(len(y_test)),
-            "n_classes": int(len(model.classes_)),
-            "classes": sorted(model.classes_.tolist()),
-            "classes_rank_values": class_list_to_rank_values(sorted(model.classes_.tolist())),
-            "confusion_matrix": cm.tolist(),
-            "per_class_recall": per_class_recall,
-            "model_type": model.__class__.__name__,
-            "n_estimators": int(getattr(model, "n_estimators", 1)),
-        }
+        calibration_status = "not_calibrated"
+        if calibration_method in {"sigmoid", "isotonic"}:
+            calibrated = CalibratedClassifierCV(model, method=calibration_method, cv=3)
+            calibrated.fit(X_train, y_train)
+            model = calibrated
+            calibration_status = calibration_method
+        return model, calibration_status
 
     def _build_feature_importance(
         self,
-        model: DecisionTreeClassifier | RandomForestClassifier,
+        model: Any,
         X_test: pd.DataFrame,
         y_test: pd.Series,
     ) -> pd.DataFrame:
@@ -405,8 +531,9 @@ class TrainModelUseCase(BaseUseCase):
             X_eval = X_test
             y_eval = y_test
 
+        base_model = getattr(model, "base_estimator", model)
         impurity = pd.Series(
-            getattr(model, "feature_importances_", np.zeros(X_test.shape[1])),
+            getattr(base_model, "feature_importances_", np.zeros(X_test.shape[1])),
             index=X_test.columns,
         )
         permutation = permutation_importance(
@@ -440,61 +567,32 @@ class TrainModelUseCase(BaseUseCase):
                 flattened[key] = value
         return flattened
 
-    def _auto_assign_rank_tz(self, db: DatabaseManager) -> int:
-        counts = pd.read_sql(
-            "SELECT COUNT(*) AS total, "
-            "SUM(CASE WHEN rank_tz IS NOT NULL THEN 1 ELSE 0 END) AS labeled "
-            "FROM fires",
-            db.engine,
+    def _export_decision_tree(self, model: Any, feature_names: list[str]) -> Optional[str]:
+        """Save a human-readable decision tree artifact for analyst workflows."""
+        if not isinstance(model, DecisionTreeClassifier):
+            return None
+        model_id = str(uuid.uuid4())[:8]
+        tree_txt_path = self.models_path / f"model_{model_id}_tree.txt"
+        tree_txt_path.write_text(
+            export_text(model, feature_names=feature_names, decimals=3),
+            encoding="utf-8",
         )
-        if counts.empty:
-            return 0
+        try:
+            import matplotlib.pyplot as plt
+            from sklearn import tree as sklearn_tree
 
-        labeled = int(counts.iloc[0].get("labeled") or 0)
-        if labeled > 0:
-            return 0
-
-        df = pd.read_sql("SELECT id, equipment_count FROM fires", db.engine)
-        if df.empty:
-            return 0
-
-        updates: list[dict[str, Any]] = []
-        for row in df.itertuples(index=False):
-            equipment_count = getattr(row, "equipment_count", None)
-            if pd.isna(equipment_count) or equipment_count is None or equipment_count < 1:
-                rank = 1.0
-                distance = 0.0
-            else:
-                count = int(equipment_count)
-                if count == 1:
-                    rank, distance = 1.0, 0.0
-                elif count == 2:
-                    rank, distance = 1.5, 0.0
-                elif count == 3:
-                    rank, distance = 2.0, 0.0
-                elif count == 4:
-                    rank, distance = 3.0, 0.0
-                elif count == 5:
-                    rank, distance = 4.0, 0.0
-                else:
-                    rank, distance = 5.0, float((count - 5) * 0.1)
-
-            updates.append(
-                {
-                    "id": int(row.id),
-                    "rank_tz": float(rank),
-                    "rank_distance": float(distance),
-                }
+            fig = plt.figure(figsize=(20, 12))
+            sklearn_tree.plot_tree(
+                model,
+                feature_names=feature_names,
+                filled=True,
+                rounded=True,
+                fontsize=7,
             )
-
-        with db.engine.begin() as conn:
-            conn.execute(
-                text(
-                    "UPDATE fires "
-                    "SET rank_tz = :rank_tz, rank_distance = :rank_distance "
-                    "WHERE id = :id"
-                ),
-                updates,
-            )
-
-        return len(updates)
+            tree_png_path = self.models_path / f"model_{model_id}_tree.png"
+            fig.savefig(tree_png_path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            return tree_png_path.name
+        except Exception as exc:  # pragma: no cover - best effort artifact
+            logger.warning("Failed to render tree png: %s", exc)
+            return tree_txt_path.name

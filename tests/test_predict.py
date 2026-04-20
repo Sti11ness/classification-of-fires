@@ -268,7 +268,7 @@ class TestRankFromResources:
     
     def test_rank_scalar(self):
         """Проверка для скалярного значения."""
-        assert rank_from_resources(2) == 1.0  # 2 техники -> ранг 1
+        assert rank_from_resources(2) == 1.5  # 2 техники -> ранг 1-бис
         assert rank_from_resources(3) == 2.0  # 3 техники -> ранг 2
         assert rank_from_resources(5) == 3.0  # 5 техники -> ранг 3
         assert rank_from_resources(8) == 4.0  # 8 техники -> ранг 4
@@ -278,7 +278,7 @@ class TestRankFromResources:
         resources = pd.Series([2, 3, 5, 8, 12])
         ranks = rank_from_resources(resources)
         
-        expected = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+        expected = pd.Series([1.5, 2.0, 3.0, 4.0, 5.0])
         pd.testing.assert_series_equal(ranks, expected)
     
     def test_rank_edge_cases(self):

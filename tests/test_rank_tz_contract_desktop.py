@@ -6,8 +6,10 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 
 from fire_es.rank_tz_contract import (
+    AVAILABILITY_STAGE_DISPATCH,
     OFFLINE_DEPLOYMENT_ROLE,
     PRODUCTION_DEPLOYMENT_ROLE,
+    SEMANTIC_TARGET_RANK_TZ_VECTOR,
     add_rank_tz_engineered_features,
     apply_preprocessor_artifact,
     build_preprocessor_artifact,
@@ -36,7 +38,11 @@ def make_rank_df(rows: int = 60) -> pd.DataFrame:
                 "t_report_min": 5 * cls + 3,
                 "t_arrival_min": 5 * cls + 9,
                 "t_first_hose_min": 5 * cls + 15,
-                "rank_tz": {1: 1.0, 2: 1.5, 3: 2.0, 4: 3.0, 5: 4.0, 6: 5.0}[cls],
+                "rank_tz_vector": {1: 1.0, 2: 1.5, 3: 2.0, 4: 3.0, 5: 4.0, 6: 5.0}[cls],
+                "rank_label_source": "historical_vector",
+                "event_id": f"evt-{idx // 2}",
+                "usable_for_training": True,
+                "is_canonical_event_record": True,
                 "fire_date": "2025-01-01",
             }
         )
@@ -47,7 +53,7 @@ def create_production_bundle(tmp_path: Path) -> Path:
     models_path = tmp_path / "models"
     models_path.mkdir(parents=True, exist_ok=True)
 
-    spec = get_feature_set_spec("online_tactical")
+    spec = get_feature_set_spec("dispatch_initial_safe")
     df = make_rank_df()
     raw_X = df[spec["feature_order"]]
     y = pd.Series([(idx % 6) + 1 for idx in range(len(df))], dtype=int)
@@ -80,7 +86,7 @@ def create_production_bundle(tmp_path: Path) -> Path:
         json.dumps(
             {
                 "model_id": model_id,
-                "model_name": "rf_online_tactical_test",
+                "model_name": "rf_dispatch_initial_safe_test",
                 "feature_set": spec["feature_set"],
                 "features": spec["feature_order"],
                 "input_schema": artifact["input_schema"],
@@ -88,6 +94,13 @@ def create_production_bundle(tmp_path: Path) -> Path:
                 "fill_values": artifact["fill_values"],
                 "allowed_missing": artifact["allowed_missing"],
                 "class_mapping": artifact["class_mapping"],
+                "semantic_target": SEMANTIC_TARGET_RANK_TZ_VECTOR,
+                "availability_stage": AVAILABILITY_STAGE_DISPATCH,
+                "split_protocol": "group_shuffle",
+                "event_overlap_rate": 0.0,
+                "metric_primary": "f1_macro",
+                "normative_version": "rank_resource_normatives_v1",
+                "preprocessing_version": artifact["preprocessing_version"],
             },
             ensure_ascii=False,
             indent=2,
@@ -98,7 +111,7 @@ def create_production_bundle(tmp_path: Path) -> Path:
     registry = ModelRegistry(models_path)
     registry.register_model(
         model_id=model_id,
-        name="rf_online_tactical_test",
+        name="rf_dispatch_initial_safe_test",
         model_type="random_forest",
         target="rank_tz",
         features=spec["feature_order"],
@@ -117,6 +130,14 @@ def create_production_bundle(tmp_path: Path) -> Path:
             "fill_values": artifact["fill_values"],
             "allowed_missing": artifact["allowed_missing"],
             "class_mapping": artifact["class_mapping"],
+            "semantic_target": SEMANTIC_TARGET_RANK_TZ_VECTOR,
+            "availability_stage": AVAILABILITY_STAGE_DISPATCH,
+            "split_protocol": "group_shuffle",
+            "event_overlap_rate": 0.0,
+            "metric_primary": "f1_macro",
+            "normative_version": "rank_resource_normatives_v1",
+            "preprocessing_version": artifact["preprocessing_version"],
+            "training_schema_version": artifact["schema_version"],
         },
     )
     assert registry.set_active_model(model_id) is True
@@ -124,7 +145,7 @@ def create_production_bundle(tmp_path: Path) -> Path:
 
 
 def test_preprocessor_artifact_median_fill_and_apply():
-    spec = get_feature_set_spec("online_tactical")
+    spec = get_feature_set_spec("dispatch_initial_safe")
     df = pd.DataFrame(
         {
             "region_code": [77, None, 79],
@@ -138,8 +159,6 @@ def test_preprocessor_artifact_median_fill_and_apply():
             "distance_to_station": [2.5, None, 4.0],
             "t_detect_min": [10, None, 5],
             "t_report_min": [15, 20, None],
-            "t_arrival_min": [25, None, 12],
-            "t_first_hose_min": [30, 35, None],
         }
     )
     artifact, transformed = build_preprocessor_artifact(
@@ -154,12 +173,14 @@ def test_preprocessor_artifact_median_fill_and_apply():
     )
     assert artifact["fill_strategy"] == "median"
     assert transformed.isna().sum().sum() == 0
+    assert artifact["preprocessing_version"] >= 3
 
     payload = {"region_code": 99, "building_floors": 12, "fire_floor": 3}
     applied = apply_preprocessor_artifact(payload, artifact)
-    assert list(applied.columns) == spec["feature_order"]
+    assert list(applied.columns) == artifact["feature_names_out"]
     assert applied.isna().sum().sum() == 0
-    assert applied.iloc[0]["settlement_type_code"] == artifact["fill_values"]["settlement_type_code"]
+    assert "settlement_type_code__missing" in applied.columns
+    assert applied.iloc[0]["settlement_type_code__missing"] == 1.0
 
 
 def test_model_registry_blocks_offline_rank_tz_activation(tmp_path: Path):
@@ -194,11 +215,13 @@ def test_predict_use_case_requires_production_bundle(tmp_path: Path):
             "fire_floor": 2,
             "distance_to_station": 2.5,
             "t_detect_min": 10,
+            "t_report_min": 14,
         },
         top_k=3,
     )
     assert result.success is True
     assert result.data["deployment_role"] == PRODUCTION_DEPLOYMENT_ROLE
+    assert result.data["semantic_target"] == SEMANTIC_TARGET_RANK_TZ_VECTOR
     assert len(result.data["top_k_ranks"]) >= 1
 
 
@@ -212,18 +235,28 @@ def test_batch_predict_uses_same_production_contract(tmp_path: Path):
             {
                 "region_code": 77,
                 "settlement_type_code": 1,
+                "fire_protection_code": 1,
+                "enterprise_type_code": 11,
                 "building_floors": 9,
                 "fire_floor": 3,
+                "fire_resistance_code": 2,
+                "source_item_code": 10,
                 "distance_to_station": 2.5,
                 "t_detect_min": 10,
                 "t_report_min": 15,
             },
             {
                 "region_code": 78,
+                "settlement_type_code": 2,
+                "fire_protection_code": 1,
                 "enterprise_type_code": 12,
                 "building_floors": 4,
                 "fire_floor": 2,
+                "fire_resistance_code": 3,
+                "source_item_code": 11,
                 "distance_to_station": 4.5,
+                "t_detect_min": 11,
+                "t_report_min": 17,
             },
         ]
     )

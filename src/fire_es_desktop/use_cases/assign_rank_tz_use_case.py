@@ -1,209 +1,140 @@
 # src/fire_es_desktop/use_cases/assign_rank_tz_use_case.py
 """
-AssignRankTzUseCase — разметка ранга пожара по нормативам.
-
-Согласно spec_first.md раздел 3.1 и spec_second.md раздел 11.4:
-- Массовое вычисление rank_tz по нормативной таблице
-- Сохранение в БД
+AssignRankTzUseCase — explicit canonical rank labeling.
 """
+
+from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any
+
 import pandas as pd
-import numpy as np
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from .base_use_case import BaseUseCase, UseCaseResult, UseCaseStatus
 
-# Импорт из domain слоя
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "fire_es"))
 
-from fire_es.ranking import assign_rank_tz, calculate_rank_by_vector
 from fire_es.db import DatabaseManager, Fire
-from sqlalchemy.orm import sessionmaker
+from fire_es.ranking import assign_rank_tz
+from fire_es.rank_tz_contract import (
+    LABEL_SOURCE_HISTORICAL_VECTOR,
+    LABEL_SOURCE_PROXY_BOOTSTRAP,
+    SEMANTIC_TARGET_RANK_TZ_COUNT_PROXY,
+    SEMANTIC_TARGET_RANK_TZ_VECTOR,
+)
 
 logger = logging.getLogger("AssignRankTzUseCase")
 
 
 class AssignRankTzUseCase(BaseUseCase):
-    """
-    Сценарий разметки rank_tz.
-
-    Шаги:
-    1. Загрузка данных из БД
-    2. Расчёт rank_tz по нормативам
-    3. Статистика разметки
-    4. Запись результатов в БД
-    """
+    """Mass label assignment for canonical rank space."""
 
     def __init__(self, db_path: Path):
         super().__init__(
             name="AssignRankTz",
-            description="Разметка ранга пожара по нормативам"
+            description="Явная разметка ранга пожара по нормативам",
         )
         self.db_path = db_path
 
     def execute(
         self,
-        use_vector: bool = True,
-        batch_size: int = 500
+        *,
+        target_definition: str = SEMANTIC_TARGET_RANK_TZ_VECTOR,
+        batch_size: int = 500,
     ) -> UseCaseResult:
-        """
-        Выполнить разметку rank_tz.
-
-        Args:
-            use_vector: Использовать векторную методику (или по количеству).
-            batch_size: Размер пакета для обновления БД.
-
-        Returns:
-            Результат разметки.
-        """
         self.status = UseCaseStatus.RUNNING
         self._cancel_requested = False
-        warnings = []
+        warnings: list[str] = []
 
         try:
             db = DatabaseManager(str(self.db_path))
+            db.create_tables()
 
-            # Шаг 1: Загрузка данных из БД
             self.report_progress(1, 4, "Загрузка данных из БД")
             self.check_cancelled()
 
-            # Получить все пожары без rank_tz или пересчитать все
-            from sqlalchemy import create_engine
             engine = create_engine(f"sqlite:///{self.db_path}")
-
-            # Загрузить данные
-            df = pd.read_sql(
-                "SELECT id, equipment, equipment_count, nozzle_count, "
-                "direct_damage, fatalities, injuries "
-                "FROM fires",
-                engine
-            )
-
+            df = pd.read_sql("SELECT * FROM fires", engine)
             if df.empty:
                 db.close()
-                return UseCaseResult(
-                    success=False,
-                    message="Нет данных в БД",
-                    warnings=warnings
-                )
+                return UseCaseResult(success=False, message="Нет данных в БД", warnings=warnings)
 
-            logger.info(f"Loaded {len(df)} fires for ranking")
-
-            # Шаг 2: Расчёт rank_tz
-            self.report_progress(2, 4, "Расчёт rank_tz по нормативам")
+            self.report_progress(2, 4, "Расчет рангов")
             self.check_cancelled()
 
-            if use_vector:
-                # Векторная методика (по типам техники)
-                # Требует распарсенного поля equipment
-                ranks = []
-                for idx, row in df.iterrows():
-                    self.check_cancelled()
-                    rank = calculate_rank_by_vector(
-                        equipment=row.get('equipment', ''),
-                        equipment_count=row.get('equipment_count', 0)
-                    )
-                    ranks.append(rank)
-
-                df['rank_tz'] = ranks
+            if target_definition == SEMANTIC_TARGET_RANK_TZ_VECTOR:
+                labeled = assign_rank_tz(df, target_definition="vector")
+                label_column = "rank_tz_vector"
+                label_source = LABEL_SOURCE_HISTORICAL_VECTOR
+            elif target_definition == SEMANTIC_TARGET_RANK_TZ_COUNT_PROXY:
+                labeled = assign_rank_tz(df, target_definition="count_proxy")
+                label_column = "rank_tz_count_proxy"
+                label_source = LABEL_SOURCE_PROXY_BOOTSTRAP
+                warnings.append("Используется auxiliary count proxy, а не canonical vector target")
             else:
-                # Упрощённая методика (по количеству)
-                df['rank_tz'] = df['equipment_count'].apply(
-                    lambda x: self._rank_by_count(x)
+                return UseCaseResult(
+                    success=False,
+                    message=f"Неподдерживаемый target_definition: {target_definition}",
+                    warnings=warnings,
                 )
 
-            # Статистика разметки
-            rank_distribution = df['rank_tz'].value_counts().to_dict()
-            null_count = df['rank_tz'].isna().sum()
+            rank_distribution = labeled[label_column].value_counts(dropna=False).to_dict()
+            null_count = int(labeled[label_column].isna().sum())
 
-            if null_count > 0:
-                warnings.append(
-                    f"Не размечено {null_count} записей ({null_count/len(df)*100:.1f}%)"
-                )
-
-            logger.info(f"Rank distribution: {rank_distribution}")
-
-            # Шаг 3: Запись в БД
-            self.report_progress(3, 4, "Запись rank_tz в БД")
+            self.report_progress(3, 4, "Запись рангов в БД")
             self.check_cancelled()
 
             Session = sessionmaker(bind=engine)
             updated_count = 0
-
+            update_columns = [
+                "rank_tz",
+                "rank_distance",
+                "rank_tz_vector",
+                "rank_tz_count_proxy",
+                "rank_label_source",
+                "rank_normative_version",
+                "rank_quality_flags",
+                "usable_for_training",
+            ]
             with Session() as session:
-                # Обновление пакетами
-                for i in range(0, len(df), batch_size):
-                    self.check_cancelled()
-
-                    batch = df.iloc[i:i + batch_size]
+                for start in range(0, len(labeled), batch_size):
+                    batch = labeled.iloc[start : start + batch_size]
                     for _, row in batch.iterrows():
-                        session.query(Fire).filter(
-                            Fire.id == row['id']
-                        ).update({
-                            'rank_tz': row['rank_tz']
-                        })
-
+                        payload = {column: row.get(column) for column in update_columns}
+                        if target_definition == SEMANTIC_TARGET_RANK_TZ_VECTOR and pd.notna(row.get("rank_tz_vector")):
+                            payload["rank_tz"] = row.get("rank_tz_vector")
+                        if target_definition == SEMANTIC_TARGET_RANK_TZ_COUNT_PROXY and pd.notna(row.get("rank_tz_count_proxy")):
+                            payload["rank_tz"] = row.get("rank_tz_count_proxy")
+                        payload["rank_label_source"] = label_source if payload.get("rank_tz") is not None else None
+                        session.query(Fire).filter(Fire.id == row["id"]).update(payload)
                     session.commit()
                     updated_count += len(batch)
-                    self.report_progress(
-                        3 + (updated_count / len(df)) * 0.25,
-                        4,
-                        f"Обновлено {updated_count} из {len(df)}"
-                    )
 
             db.close()
-
-            # Шаг 4: Завершение
             self.report_progress(4, 4, "Разметка завершена")
-
             return UseCaseResult(
                 success=True,
                 message=f"Размечено {updated_count} записей",
                 data={
-                    "total_records": len(df),
+                    "total_records": len(labeled),
                     "updated_records": updated_count,
                     "rank_distribution": rank_distribution,
-                    "null_count": null_count
+                    "null_count": null_count,
+                    "semantic_target": target_definition,
                 },
-                warnings=warnings
+                warnings=warnings,
             )
-
         except Exception as e:
-            logger.error(f"Rank assignment failed: {e}", exc_info=True)
+            logger.error("Rank assignment failed: %s", e, exc_info=True)
             self.status = UseCaseStatus.FAILED
-
             return UseCaseResult(
                 success=False,
                 message=f"Ошибка разметки: {str(e)}",
                 error=str(e),
-                warnings=warnings
+                warnings=warnings,
             )
-
-    def _rank_by_count(self, count: int) -> str:
-        """
-        Упрощённое определение ранга по количеству техники.
-
-        Args:
-            count: Количество техники.
-
-        Returns:
-            Ранг (строка).
-        """
-        if pd.isna(count) or count is None:
-            return None
-
-        if count <= 0:
-            return None
-        elif count <= 2:
-            return "1"
-        elif count == 3:
-            return "2"
-        elif count <= 5:
-            return "3"
-        elif count <= 8:
-            return "4"
-        else:
-            return "5"

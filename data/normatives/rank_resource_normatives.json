@@ -1,0 +1,81 @@
+{
+  "normative_version": "rank_resource_normatives_v1",
+  "ranks": [
+    {
+      "rank": 1.0,
+      "label": "1",
+      "display_name": "Ранг 1",
+      "description": "Минимальный выезд",
+      "sort_order": 1,
+      "min_equipment_count": 1,
+      "resource_vector": {
+        "AC": 1
+      }
+    },
+    {
+      "rank": 1.5,
+      "label": "1-бис",
+      "display_name": "Ранг 1-бис",
+      "description": "Усиленный минимальный выезд",
+      "sort_order": 2,
+      "min_equipment_count": 2,
+      "resource_vector": {
+        "AC": 2
+      }
+    },
+    {
+      "rank": 2.0,
+      "label": "2",
+      "display_name": "Ранг 2",
+      "description": "Два автоцистерны и автолестница",
+      "sort_order": 3,
+      "min_equipment_count": 3,
+      "resource_vector": {
+        "AC": 2,
+        "AL": 1
+      }
+    },
+    {
+      "rank": 3.0,
+      "label": "3",
+      "display_name": "Ранг 3",
+      "description": "Тактическое усиление",
+      "sort_order": 4,
+      "min_equipment_count": 5,
+      "resource_vector": {
+        "AC": 3,
+        "AL": 1,
+        "APS": 1
+      }
+    },
+    {
+      "rank": 4.0,
+      "label": "4",
+      "display_name": "Ранг 4",
+      "description": "Высокий ранг усиления",
+      "sort_order": 5,
+      "min_equipment_count": 8,
+      "resource_vector": {
+        "AC": 4,
+        "AL": 2,
+        "APS": 1,
+        "AG": 1
+      }
+    },
+    {
+      "rank": 5.0,
+      "label": "5",
+      "display_name": "Ранг 5",
+      "description": "Максимальный ранг усиления",
+      "sort_order": 6,
+      "min_equipment_count": 12,
+      "resource_vector": {
+        "AC": 5,
+        "AL": 2,
+        "APS": 2,
+        "AG": 1,
+        "AR": 1
+      }
+    }
+  ]
+}
