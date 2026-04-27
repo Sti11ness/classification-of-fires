@@ -9,31 +9,42 @@ Main Window — главное окно приложения Fire ES Desktop.
 - Нижняя строка состояния
 """
 
-import sys
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional
 
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
-    QListWidget, QListWidgetItem, QLabel, QFrame, QSplitter,
-    QStatusBar, QProgressBar, QPushButton, QMessageBox, QFileDialog,
-    QComboBox
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QSizePolicy,
+    QSplitter,
+    QStackedWidget,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import Qt, Signal, Slot, QSize, QSignalBlocker
-from PySide6.QtGui import QFont, QIcon
 
 from ..viewmodels import ProjectViewModel
 from .pages import (
-    ProjectPage,
+    BatchPredictPage,
+    DigitalTwinPage,
     ImportPage,
-    TrainingPage,
-    LPRPredictPage,
-    LPRDecisionHistoryPage,
-    ModelsPage,
     LogPage,
-    BatchPredictPage
+    LPRDecisionHistoryPage,
+    LPRPredictPage,
+    ModelsPage,
+    ProjectPage,
+    TrainingPage,
 )
+from .theme import create_page_header, style_label
 
 logger = logging.getLogger("MainWindow")
 
@@ -44,6 +55,7 @@ PAGE_BATCH_PREDICT = "batch_predict"
 PAGE_LPR_PREDICT = "lpr_predict"
 PAGE_LPR_HISTORY = "lpr_history"
 PAGE_MODELS = "models"
+PAGE_DIGITAL_TWIN = "digital_twin"
 PAGE_LOG = "log"
 
 
@@ -52,27 +64,15 @@ class NavigationList(QListWidget):
 
     def __init__(self):
         super().__init__()
-        self.setFixedWidth(200)
-        self.setSpacing(2)
-        self.setStyleSheet("""
-            QListWidget {
-                background-color: #5a5a5a;
-                border: 1px solid black;
-                color: white;
-            }
-            QListWidget::item {
-                padding: 10px;
-                border-radius: 4px;
-                color: white;
-            }
-            QListWidget::item:selected {
-                background-color: #7a7a7a;
-                color: white;
-            }
-            QListWidget::item:hover {
-                background-color: #6a6a6a;
-            }
-        """)
+        self.setObjectName("NavigationList")
+        self.setMinimumWidth(190)
+        self.setMaximumWidth(190)
+        self.setSpacing(6)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setUniformItemSizes(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
 
 class ContextPanel(QFrame):
@@ -81,39 +81,41 @@ class ContextPanel(QFrame):
 
     def __init__(self):
         super().__init__()
-        self.setFixedWidth(250)
-        self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
-        self.setStyleSheet("""
-            QFrame {
-                background-color: #5a5a5a;
-                border-left: 1px solid black;
-                color: white;
-            }
-        """)
+        self.setObjectName("ContextPanel")
+        self.setMinimumWidth(260)
+        self.setMaximumWidth(300)
+        self.setFrameStyle(QFrame.NoFrame)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(15)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
 
         # Заголовок
-        title = QLabel("Контекст")
-        title.setFont(QFont("Arial", 12, QFont.Bold))
-        layout.addWidget(title)
+        layout.addWidget(create_page_header("Состояние", "Текущее рабочее пространство, выбранная модель и режим работы."))
 
-        # Workspace
-        layout.addWidget(QLabel("Workspace:"))
+        # Рабочее пространство
+        workspace_title = QLabel("Рабочее пространство")
+        style_label(workspace_title, "metric", word_wrap=False)
+        layout.addWidget(workspace_title)
         self.workspace_label = QLabel("Не открыт")
         self.workspace_label.setWordWrap(True)
+        style_label(self.workspace_label, "value", word_wrap=True)
         layout.addWidget(self.workspace_label)
 
-        # Активная модель
-        layout.addWidget(QLabel("Активная модель:"))
-        self.model_label = QLabel("Нет")
+        # Модель
+        model_title = QLabel("Модели")
+        style_label(model_title, "metric", word_wrap=False)
+        layout.addWidget(model_title)
+        self.model_label = QLabel("Активная модель в реестре: нет\nРабочая модель для прогноза: нет")
         self.model_label.setWordWrap(True)
+        style_label(self.model_label, "value", word_wrap=True)
         layout.addWidget(self.model_label)
 
         # Роль
-        layout.addWidget(QLabel("Роль:"))
+        role_title = QLabel("Роль")
+        style_label(role_title, "metric", word_wrap=False)
+        layout.addWidget(role_title)
         self.role_combo = QComboBox()
         self.role_combo.addItem("Аналитик", "analyst")
         self.role_combo.addItem("ЛПР", "lpr")
@@ -121,32 +123,39 @@ class ContextPanel(QFrame):
         layout.addWidget(self.role_combo)
 
         # Статистика
-        layout.addWidget(QLabel("Статистика:"))
+        stats_title = QLabel("Статистика")
+        style_label(stats_title, "metric", word_wrap=False)
+        layout.addWidget(stats_title)
         self.stats_label = QLabel("")
         self.stats_label.setWordWrap(True)
+        style_label(self.stats_label, "value", word_wrap=True)
         layout.addWidget(self.stats_label)
 
         layout.addStretch()
 
     def update_context(self, workspace_path: Optional[Path],
-                       model_info: Optional[Dict], role: str,
-                       stats: Optional[Dict]) -> None:
+                       model_info: Optional[dict], role: str,
+                       stats: Optional[dict]) -> None:
         """Обновить контекст-панель."""
         if workspace_path:
             self.workspace_label.setText(str(workspace_path))
         else:
             self.workspace_label.setText("Не открыт")
 
-        if model_info:
-            self.model_label.setText(model_info.get("name", "Нет"))
-        else:
-            self.model_label.setText("Нет")
+        active_registry_model = stats.get("active_registry_model_name") if stats else None
+        working_model = stats.get("working_model_name") if stats else None
+        self.model_label.setText(
+            "Активная модель в реестре: "
+            f"{active_registry_model or 'нет'}\n"
+            "Рабочая модель для прогноза: "
+            f"{working_model or 'не выбрана'}"
+        )
 
         self.set_role(role)
 
         if stats:
             stats_text = (
-                f"Пожаров: {stats.get('fires_count', 0)}\n"
+                f"Исторических записей: {stats.get('fires_count', 0)}\n"
                 f"Решений ЛПР: {stats.get('lpr_decisions_count', 0)}\n"
                 f"Моделей: {stats.get('models_count', 0)}"
             )
@@ -182,14 +191,9 @@ class StatusBar(QStatusBar):
 
         # Прогресс бар
         self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedWidth(200)
+        self.progress_bar.setFixedWidth(240)
         self.progress_bar.setVisible(False)
         self.addPermanentWidget(self.progress_bar)
-
-        # Кнопка журнала
-        self.log_button = QPushButton("Журнал")
-        self.log_button.setFixedWidth(80)
-        self.addPermanentWidget(self.log_button)
 
     def set_task_status(self, message: str) -> None:
         """Установить статус задачи."""
@@ -210,11 +214,13 @@ class StatusBar(QStatusBar):
 class MainWindow(QMainWindow):
     """Главное окно приложения."""
 
+    CONTEXT_PANEL_COLLAPSE_WIDTH = 1540
+
     def __init__(self, role: str = "analyst"):
         super().__init__()
         self.role = role  # "analyst" или "lpr"
         self._nav_page_keys: list[str] = []
-        self.page_indices: Dict[str, int] = {}
+        self.page_indices: dict[str, int] = {}
         self.project_vm = ProjectViewModel()
 
         self.setWindowTitle("Fire ES — Экспертная система классификации пожаров")
@@ -237,17 +243,27 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        self.shell_splitter = QSplitter(Qt.Horizontal)
+        self.shell_splitter.setChildrenCollapsible(False)
+        self.shell_splitter.setHandleWidth(0)
+
         # Левая навигация
         self.navigation = NavigationList()
-        main_layout.addWidget(self.navigation)
+        self.shell_splitter.addWidget(self.navigation)
 
         # Центральная область
         self.pages_stack = QStackedWidget()
-        main_layout.addWidget(self.pages_stack, 1)
+        self.pages_stack.setObjectName("PagesStack")
+        self.shell_splitter.addWidget(self.pages_stack)
 
         # Правая контекст-панель
         self.context_panel = ContextPanel()
-        main_layout.addWidget(self.context_panel)
+        self.shell_splitter.addWidget(self.context_panel)
+        self.shell_splitter.setStretchFactor(0, 0)
+        self.shell_splitter.setStretchFactor(1, 1)
+        self.shell_splitter.setStretchFactor(2, 0)
+        self.shell_splitter.setSizes([190, 1030, 280])
+        main_layout.addWidget(self.shell_splitter)
 
         # Статус бар
         self.status_bar = StatusBar()
@@ -255,6 +271,7 @@ class MainWindow(QMainWindow):
 
         # Создать страницы
         self._create_pages()
+        self._update_shell_layout()
 
     def _create_pages(self) -> None:
         """Создать страницы."""
@@ -286,6 +303,10 @@ class MainWindow(QMainWindow):
         self.models_page = ModelsPage()
         self._register_page(PAGE_MODELS, self.models_page)
 
+        # Цифровой двойник среды
+        self.digital_twin_page = DigitalTwinPage()
+        self._register_page(PAGE_DIGITAL_TWIN, self.digital_twin_page)
+
         # Страница журнала
         self.log_page = LogPage()
         self._register_page(PAGE_LOG, self.log_page)
@@ -303,9 +324,6 @@ class MainWindow(QMainWindow):
         # Project VM
         self.project_vm.on_workspace_changed = self._on_workspace_changed
         self.project_vm.on_error = self._on_error
-
-        # Status bar log button
-        self.status_bar.log_button.clicked.connect(self._show_log_page)
 
     def _on_workspace_changed(self, workspace_path: Optional[Path]) -> None:
         """Обработчик изменения Workspace."""
@@ -339,18 +357,19 @@ class MainWindow(QMainWindow):
 
         if self.role == "analyst":
             items = [
-                ("Проект", PAGE_PROJECT),
+                ("Рабочее пространство", PAGE_PROJECT),
                 ("Импорт данных", PAGE_IMPORT),
                 ("Обучение модели", PAGE_TRAINING),
                 ("Пакетный прогноз", PAGE_BATCH_PREDICT),
                 ("Прогноз (ЛПР)", PAGE_LPR_PREDICT),
                 ("История решений ЛПР", PAGE_LPR_HISTORY),
                 ("Модели", PAGE_MODELS),
+                ("Цифровой двойник", PAGE_DIGITAL_TWIN),
                 ("Журнал", PAGE_LOG),
             ]
         else:  # lpr
             items = [
-                ("Проект", PAGE_PROJECT),
+                ("Рабочее пространство", PAGE_PROJECT),
                 ("Прогноз (ЛПР)", PAGE_LPR_PREDICT),
                 ("История решений ЛПР", PAGE_LPR_HISTORY),
                 ("Журнал", PAGE_LOG),
@@ -371,8 +390,23 @@ class MainWindow(QMainWindow):
         """Переключить страницу по карте навигации."""
         if row < 0 or row >= len(self._nav_page_keys):
             return
+        self.project_vm.refresh_stats()
+        self.context_panel.update_context(
+            workspace_path=self.project_vm.get_workspace_path(),
+            model_info=self.project_vm.get_active_model_info(),
+            role=self.role,
+            stats=self.project_vm.get_stats()
+        )
         page_key = self._nav_page_keys[row]
+        if page_key == PAGE_PROJECT:
+            self.project_page._update_ui()
+        elif page_key == PAGE_TRAINING and self.project_vm.get_db_path():
+            self.training_page._update_source_info(self.project_vm.get_db_path())
         self.pages_stack.setCurrentIndex(self.page_indices[page_key])
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._update_shell_layout()
 
     def _on_role_changed(self, role: str) -> None:
         """Переключить режим приложения без перезапуска."""
@@ -386,16 +420,9 @@ class MainWindow(QMainWindow):
             role=self.role,
             stats=self.project_vm.get_stats()
         )
-        self.status_bar.set_task_status(f"Режим: {self.role}")
+        role_label = "ЛПР" if self.role == "lpr" else "Аналитик"
+        self.status_bar.set_task_status(f"Режим: {role_label}")
         logger.info(f"Role switched to: {self.role}")
-
-    def _show_log_page(self) -> None:
-        """Показать страницу журнала."""
-        if PAGE_LOG not in self._nav_page_keys:
-            QMessageBox.information(self, "Журнал", "Журнал недоступен в этом режиме")
-            return
-        nav_row = self._nav_page_keys.index(PAGE_LOG)
-        self.navigation.setCurrentRow(nav_row)
 
     def _propagate_workspace_state(self) -> None:
         """Передать текущие workspace-зависимости во все страницы."""
@@ -420,9 +447,19 @@ class MainWindow(QMainWindow):
         )
         self.lpr_history_page.set_db_path(db_path)
         self.models_page.set_models_path(models_path)
+        self.digital_twin_page.set_paths(db_path, reports_path)
         self.log_page.set_logs_path(logs_path)
 
-    def closeEvent(self, event) -> None:
+    def _update_shell_layout(self) -> None:
+        """Подстраивать shell под узкое окно."""
+        compact = self.width() < self.CONTEXT_PANEL_COLLAPSE_WIDTH
+        self.context_panel.setVisible(not compact)
+        if compact:
+            self.shell_splitter.setSizes([190, max(780, self.width() - 210), 0])
+        else:
+            self.shell_splitter.setSizes([190, max(900, self.width() - 490), 280])
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         """Обработчик закрытия окна."""
         # Закрыть Workspace
         self.project_vm.close_workspace()

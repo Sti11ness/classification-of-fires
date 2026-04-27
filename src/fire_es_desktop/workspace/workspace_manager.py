@@ -59,24 +59,39 @@ class WorkspaceManager:
     
     def open_workspace(self, path: Path) -> bool:
         """Открыть существующую рабочую папку."""
-        if not path.exists():
-            self.logger.error(f"Workspace path does not exist: {path}")
+        resolved_path = self.resolve_workspace_path(path)
+        if not resolved_path:
+            self.logger.error(f"Workspace path does not exist or is invalid: {path}")
             return False
-        
+
         required_files = ["config.json", "fire_es.sqlite"]
         for file in required_files:
-            if not (path / file).exists():
-                self.logger.error(f"Required file missing: {file} in {path}")
+            if not (resolved_path / file).exists():
+                self.logger.error(f"Required file missing: {file} in {resolved_path}")
                 return False
 
         # Для старых/поврежденных workspace: гарантируем наличие схемы.
-        db_path = path / "fire_es.sqlite"
+        db_path = resolved_path / "fire_es.sqlite"
         if not self._ensure_db_schema(db_path):
             return False
 
-        self.current_workspace = path
-        self.logger.info(f"Workspace opened: {path}")
+        self.current_workspace = resolved_path
+        self.logger.info(f"Workspace opened: {resolved_path}")
         return True
+
+    def resolve_workspace_path(self, path: Path) -> Optional[Path]:
+        """Найти рабочее пространство по выбранному пути."""
+        if not path.exists():
+            return None
+
+        if self._is_workspace_path(path):
+            return path
+
+        direct_child = path / "fire_es_workspace"
+        if self._is_workspace_path(direct_child):
+            return direct_child
+
+        return None
     
     def get_current_workspace(self) -> Optional[Path]:
         """Получить текущую рабочую папку."""
@@ -109,32 +124,32 @@ class WorkspaceManager:
     def validate_workspace(self) -> tuple[bool, str]:
         """Проверить целостность Workspace."""
         if not self.current_workspace:
-            return False, "No workspace opened"
+            return False, "Рабочее пространство не открыто"
         
         if not self.current_workspace.exists():
-            return False, "Workspace directory does not exist"
+            return False, "Папка рабочего пространства не найдена"
         
         # Проверка обязательных файлов
         if not (self.current_workspace / "fire_es.sqlite").exists():
-            return False, "fire_es.sqlite not found"
+            return False, "Не найден файл fire_es.sqlite"
         
         if not (self.current_workspace / "config.json").exists():
-            return False, "config.json not found"
+            return False, "Не найден файл config.json"
         
         # Проверка структуры
         reports = self.current_workspace / "reports"
         if not reports.exists():
-            return False, "reports directory not found"
+            return False, "Не найдена папка reports"
         
         logs = self.current_workspace / "logs"
         if not logs.exists():
-            return False, "logs directory not found"
+            return False, "Не найдена папка logs"
 
         db_path = self.current_workspace / "fire_es.sqlite"
         if not self._has_table(db_path, "fires"):
-            return False, "fires table not found in fire_es.sqlite"
+            return False, "В базе fire_es.sqlite нет таблицы fires"
 
-        return True, "Workspace is valid"
+        return True, "Рабочее пространство готово к работе"
 
     def _ensure_db_schema(self, db_path: Path) -> bool:
         """Создать обязательные таблицы в SQLite (идемпотентно)."""
@@ -159,3 +174,12 @@ class WorkspaceManager:
                 return cur.fetchone() is not None
         except Exception:
             return False
+
+    def _is_workspace_path(self, path: Path) -> bool:
+        """Проверить, похож ли путь на рабочее пространство."""
+        return (
+            path.exists()
+            and path.is_dir()
+            and (path / "config.json").exists()
+            and (path / "fire_es.sqlite").exists()
+        )

@@ -212,46 +212,67 @@ class ModelRegistry:
 
     def is_model_production_safe(self, model_info: Dict[str, Any]) -> bool:
         """Return whether a model can participate in the canonical LPR contour."""
+        return not self.get_production_unsafe_reasons(model_info)
+
+    def get_production_unsafe_reasons(self, model_info: Dict[str, Any]) -> List[str]:
+        """Собрать понятные причины, почему модель нельзя использовать для прогноза ЛПР."""
+        reasons: List[str] = []
         if model_info.get("target") != "rank_tz":
-            return False
+            reasons.append("модель обучена не для ранга пожара")
         if model_info.get("offline_only"):
-            return False
+            reasons.append("модель помечена как исследовательская или архивная")
         if model_info.get("deployment_role") not in PRODUCTION_ROLE_WHITELIST:
-            return False
+            reasons.append("модель не предназначена для рабочего экрана ЛПР")
         if model_info.get("availability_stage") != AVAILABILITY_STAGE_DISPATCH:
-            return False
+            reasons.append("стадия данных не подходит для прогноза до прибытия подразделения")
         if model_info.get("semantic_target") != "rank_tz_vector":
-            return False
+            reasons.append("используется неподходящий тип целевой разметки")
         if model_info.get("feature_set") != DEFAULT_LPR_FEATURE_SET:
-            return False
+            reasons.append("набор признаков не совпадает с рабочей формой ЛПР")
         if model_info.get("feature_set") == "online_tactical" or model_info.get("legacy_alias"):
-            return False
+            reasons.append("модель использует устаревшую схему признаков")
         if model_info.get("split_protocol") not in PRODUCTION_SAFE_SPLITS:
-            return False
+            reasons.append("схема разделения выборки не подходит для рабочего контура")
         if float(model_info.get("event_overlap_rate", 1.0)) != 0.0:
-            return False
+            reasons.append("в проверке качества есть пересечение одних и тех же событий")
         if not model_info.get("preprocessor_path"):
-            return False
+            reasons.append("не найден файл подготовки признаков")
         if not model_info.get("training_schema_version"):
-            return False
+            reasons.append("нет версии схемы обучения")
         if not model_info.get("normative_version"):
-            return False
+            reasons.append("нет версии нормативов")
         if not model_info.get("input_schema"):
-            return False
+            reasons.append("не описана входная форма модели")
         feature_order = model_info.get("features", [])
         availability_stage = model_info.get("availability_stage")
         if availability_stage == AVAILABILITY_STAGE_DISPATCH:
             if get_feature_set_forbidden_violations(feature_order, availability_stage=availability_stage):
-                return False
-        return True
+                reasons.append("в признаках есть поля, недопустимые для прогноза ЛПР")
+        return reasons
 
-    def delete_model(self, model_id: str) -> None:
+    def delete_model(self, model_id: str) -> bool:
         """
         Удалить модель из реестра.
 
         Args:
             model_id: ID модели.
         """
+        model_info = self.get_model_info(model_id)
+        if not model_info:
+            return False
+
+        for relative_path in [
+            model_info.get("artifact_path"),
+            model_info.get("metadata_path"),
+            model_info.get("preprocessor_path"),
+            model_info.get("tree_artifact_path"),
+        ]:
+            if not relative_path:
+                continue
+            path = self.models_path / relative_path
+            if path.exists():
+                path.unlink()
+
         self.registry["models"] = [
             m for m in self.registry["models"]
             if m["model_id"] != model_id
@@ -263,6 +284,7 @@ class ModelRegistry:
 
         self._save_registry()
         self.logger.info(f"Deleted model from registry: {model_id}")
+        return True
 
     def get_model_metrics(self, model_id: str) -> Optional[Dict[str, float]]:
         """Получить метрики модели."""

@@ -15,6 +15,14 @@ from PySide6.QtCore import Qt
 from pathlib import Path
 
 from ...viewmodels import ProjectViewModel
+from ..theme import (
+    configure_grid_layout,
+    create_page_header,
+    create_static_page,
+    create_status_label,
+    style_button,
+    style_label,
+)
 
 
 class ProjectPage(QWidget):
@@ -30,84 +38,59 @@ class ProjectPage(QWidget):
 
     def _init_ui(self) -> None:
         """Инициализировать UI."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(20)
+        layout = create_static_page(self)
 
         # Заголовок
-        title = QLabel("Проект (Workspace)")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: white;")
-        layout.addWidget(title)
+        layout.addWidget(
+            create_page_header(
+                "Рабочее пространство",
+                "Создание, открытие и контроль локальной рабочей папки с базой, моделями и журналом.",
+            )
+        )
 
         # Кнопки управления
         buttons_layout = QHBoxLayout()
-        buttons_layout.setSpacing(10)
+        buttons_layout.setSpacing(12)
 
-        self.create_btn = QPushButton("Создать Workspace")
-        self.create_btn.setFixedHeight(40)
-        self.create_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4caf50;
-                color: white;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
+        self.create_btn = QPushButton("Создать рабочее пространство")
+        style_button(self.create_btn, "success")
         buttons_layout.addWidget(self.create_btn)
 
-        self.open_btn = QPushButton("Открыть Workspace")
-        self.open_btn.setFixedHeight(40)
-        self.open_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196f3;
-                color: white;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #2085d9;
-            }
-        """)
+        self.open_btn = QPushButton("Открыть рабочее пространство")
+        style_button(self.open_btn, "primary")
         buttons_layout.addWidget(self.open_btn)
 
-        self.close_btn = QPushButton("Закрыть Workspace")
-        self.close_btn.setFixedHeight(40)
-        self.close_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #f44336;
-                color: white;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #da3c30;
-            }
-        """)
+        self.close_btn = QPushButton("Закрыть рабочее пространство")
+        style_button(self.close_btn, "danger")
         buttons_layout.addWidget(self.close_btn)
 
+        buttons_layout.addStretch()
         layout.addLayout(buttons_layout)
 
         # Информация о Workspace
-        self.workspace_group = QGroupBox("Информация о Workspace")
+        self.workspace_group = QGroupBox("Сведения о рабочем пространстве")
         ws_layout = QGridLayout(self.workspace_group)
-        ws_layout.setSpacing(10)
+        configure_grid_layout(ws_layout)
 
         self.ws_path_label = QLabel("Путь:")
+        style_label(self.ws_path_label, "metric", word_wrap=False)
         ws_layout.addWidget(self.ws_path_label, 0, 0)
         self.ws_path_value = QLabel("")
+        style_label(self.ws_path_value, "value", word_wrap=True)
         ws_layout.addWidget(self.ws_path_value, 0, 1)
 
         self.ws_db_label = QLabel("База данных:")
+        style_label(self.ws_db_label, "metric", word_wrap=False)
         ws_layout.addWidget(self.ws_db_label, 1, 0)
         self.ws_db_value = QLabel("")
+        style_label(self.ws_db_value, "value", word_wrap=True)
         ws_layout.addWidget(self.ws_db_value, 1, 1)
 
         self.ws_valid_label = QLabel("Статус:")
+        style_label(self.ws_valid_label, "metric", word_wrap=False)
         ws_layout.addWidget(self.ws_valid_label, 2, 0)
         self.ws_valid_value = QLabel("")
+        style_label(self.ws_valid_value, "value", word_wrap=True)
         ws_layout.addWidget(self.ws_valid_value, 2, 1)
 
         layout.addWidget(self.workspace_group)
@@ -115,25 +98,33 @@ class ProjectPage(QWidget):
         # Статистика
         self.stats_group = QGroupBox("Статистика проекта")
         stats_layout = QGridLayout(self.stats_group)
-        stats_layout.setSpacing(15)
+        configure_grid_layout(stats_layout)
 
-        self.fires_count_label = QLabel("Пожаров: 0")
-        self.fires_count_label.setStyleSheet("font-size: 16px;")
+        self.fires_count_label = QLabel("Исторических записей: 0")
+        style_label(self.fires_count_label, "metric", word_wrap=False)
         stats_layout.addWidget(self.fires_count_label, 0, 0)
 
         self.decisions_count_label = QLabel("Решений ЛПР: 0")
-        self.decisions_count_label.setStyleSheet("font-size: 16px;")
+        style_label(self.decisions_count_label, "metric", word_wrap=False)
         stats_layout.addWidget(self.decisions_count_label, 0, 1)
 
         self.models_count_label = QLabel("Моделей: 0")
-        self.models_count_label.setStyleSheet("font-size: 16px;")
+        style_label(self.models_count_label, "metric", word_wrap=False)
         stats_layout.addWidget(self.models_count_label, 1, 0)
 
-        self.active_model_label = QLabel("Активная модель: Нет")
-        self.active_model_label.setStyleSheet("font-size: 16px;")
+        self.active_model_label = QLabel("Активная модель в реестре: нет")
+        style_label(self.active_model_label, "value", word_wrap=True)
         stats_layout.addWidget(self.active_model_label, 1, 1)
 
+        self.working_model_label = QLabel("Рабочая модель для прогноза ЛПР: не выбрана")
+        style_label(self.working_model_label, "value", word_wrap=True)
+        stats_layout.addWidget(self.working_model_label, 2, 0, 1, 2)
+
         layout.addWidget(self.stats_group)
+
+        self.status_label = create_status_label()
+        self.status_label.hide()
+        layout.addWidget(self.status_label)
 
         layout.addStretch()
 
@@ -167,31 +158,37 @@ class ProjectPage(QWidget):
             self.ws_valid_value.setText(
                 "✓ Валиден" if valid else f"✗ {msg}"
             )
-            self.ws_valid_value.setStyleSheet("color: white;")
+            style_label(self.ws_valid_value, "ok" if valid else "problem", word_wrap=True)
+            self.status_label.setText("Рабочее пространство подключено и готово к работе.")
+            self.status_label.show()
 
             # Статистика
             stats = self.project_vm.get_stats()
-            self.fires_count_label.setText(f"Пожаров: {stats.get('fires_count', 0)}")
+            self.fires_count_label.setText(f"Исторических записей: {stats.get('fires_count', 0)}")
             self.decisions_count_label.setText(
                 f"Решений ЛПР: {stats.get('lpr_decisions_count', 0)}"
             )
             self.models_count_label.setText(f"Моделей: {stats.get('models_count', 0)}")
 
-            model_info = self.project_vm.get_active_model_info()
-            if model_info:
-                self.active_model_label.setText(
-                    f"Активная модель: {model_info.get('name', 'Нет')}"
-                )
-            else:
-                self.active_model_label.setText("Активная модель: Нет")
+            self.active_model_label.setText(
+                "Активная модель в реестре: "
+                f"{stats.get('active_registry_model_name') or 'нет'}"
+            )
+            self.working_model_label.setText(
+                "Рабочая модель для прогноза ЛПР: "
+                f"{stats.get('working_model_name') or 'не выбрана'}"
+            )
         else:
             self.ws_path_value.setText("")
             self.ws_db_value.setText("")
             self.ws_valid_value.setText("")
-            self.fires_count_label.setText("Пожаров: 0")
+            self.fires_count_label.setText("Исторических записей: 0")
             self.decisions_count_label.setText("Решений ЛПР: 0")
             self.models_count_label.setText("Моделей: 0")
-            self.active_model_label.setText("Активная модель: Нет")
+            self.active_model_label.setText("Активная модель в реестре: нет")
+            self.working_model_label.setText("Рабочая модель для прогноза ЛПР: не выбрана")
+            self.status_label.setText("Откройте существующее рабочее пространство или создайте новое.")
+            self.status_label.show()
 
     def _on_create(self) -> None:
         """Создать Workspace."""

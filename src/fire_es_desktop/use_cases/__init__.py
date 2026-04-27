@@ -8,6 +8,7 @@ from .train_model_use_case import TrainModelUseCase
 from .predict_use_case import PredictUseCase
 from .save_decision_use_case import SaveDecisionUseCase
 from .batch_predict_export_use_case import BatchPredictExportUseCase
+from .digital_twin_experiment_use_case import DigitalTwinExperimentUseCase
 
 __all__ = [
     "BaseUseCase",
@@ -20,4 +21,5 @@ __all__ = [
     "PredictUseCase",
     "SaveDecisionUseCase",
     "BatchPredictExportUseCase",
+    "DigitalTwinExperimentUseCase",
 ]

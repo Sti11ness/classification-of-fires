@@ -36,3 +36,42 @@ def test_model_metadata_contains_followup_passport_fields(tmp_path: Path):
         "test_event_count",
     ]:
         assert key in metadata
+
+
+def test_model_metadata_contains_tuning_fields_when_enabled(tmp_path: Path):
+    db_path = tmp_path / "passport_tuned.sqlite"
+    models_path = tmp_path / "models"
+    models_path.mkdir()
+    _seed_training_db(db_path)
+    use_case = TrainModelUseCase(db_path, models_path)
+    result = use_case.execute(model_type="random_forest", tuning_enabled=True, tuning_trials=2)
+    assert result.success is True
+    metadata = json.loads(Path(result.data["metadata_path"]).read_text(encoding="utf-8"))
+    for key in [
+        "tuning_enabled",
+        "tuning_trials_requested",
+        "tuning_trials_completed",
+        "tuning_metric",
+        "best_cv_score",
+        "best_params",
+    ]:
+        assert key in metadata
+    assert metadata["tuning_enabled"] is True
+
+
+def test_model_metadata_uses_selected_tuning_metric(tmp_path: Path):
+    db_path = tmp_path / "passport_metric.sqlite"
+    models_path = tmp_path / "models"
+    models_path.mkdir()
+    _seed_training_db(db_path)
+    use_case = TrainModelUseCase(db_path, models_path)
+    result = use_case.execute(
+        model_type="random_forest",
+        tuning_enabled=True,
+        tuning_trials=2,
+        metric_primary="accuracy",
+    )
+    assert result.success is True
+    metadata = json.loads(Path(result.data["metadata_path"]).read_text(encoding="utf-8"))
+    assert metadata["metric_primary"] == "accuracy"
+    assert metadata["tuning_metric"] == "accuracy"

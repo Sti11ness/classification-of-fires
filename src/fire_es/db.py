@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from sqlalchemy import (
     Column, Integer, Float, String, DateTime, Boolean, Text, JSON,
-    create_engine, ForeignKey, UniqueConstraint, inspect, text
+    Table, create_engine, ForeignKey, UniqueConstraint, inspect, text
 )
 from sqlalchemy.orm import (
     Session, declarative_base, relationship, sessionmaker
@@ -144,6 +144,32 @@ class Fire(Base):
     def to_dict(self) -> dict:
         """Преобразование в словарь."""
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+
+
+FIRES_HISTORICAL_TABLE = Fire.__table__.to_metadata(Base.metadata, name="fires_historical")
+FIRES_LPR_TRAIN_TABLE = Fire.__table__.to_metadata(Base.metadata, name="fires_lpr_train")
+FIRES_LPR_TRAIN_TABLE.append_column(Column("source_decision_id", Integer, unique=True, index=True))
+FIRES_LPR_TRAIN_TABLE.append_column(Column("promoted_at", DateTime, default=datetime.utcnow))
+FIRES_LPR_TRAIN_TABLE.append_column(Column("promoted_by", String(128)))
+FIRES_LPR_TRAIN_TABLE.append_column(Column("train_enabled", Boolean, default=True))
+
+TRAIN_SYNTHETIC_TABLE = Table(
+    "train_synthetic",
+    Base.metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("train_run_id", String(64), nullable=False, index=True),
+    Column("row_number", Integer, nullable=False),
+    Column("generator_method", String(64), nullable=False),
+    Column("generator_params", Text),
+    Column("base_source_scope", Text),
+    Column("created_at", DateTime, default=datetime.utcnow),
+    Column("source_feature_set", String(128)),
+    Column("semantic_target", String(64)),
+    Column("is_synthetic", Boolean, default=True),
+    Column("target_class", Integer),
+    Column("target_rank", Float),
+    Column("features_json", Text, nullable=False),
+)
 
 
 class Normative(Base):
@@ -374,12 +400,12 @@ class DatabaseManager:
 
     def _seed_normatives_if_empty(self) -> None:
         """Load canonical normatives into SQLite when the table is empty."""
-        payload = load_rank_resource_normatives()
-        rank_table = get_normative_rank_table(payload)
         with self.engine.begin() as conn:
             total = conn.execute(text("SELECT COUNT(*) FROM normatives")).scalar() or 0
             if total:
                 return
+            payload = load_rank_resource_normatives()
+            rank_table = get_normative_rank_table(payload)
             rows = []
             for _, row in rank_table.iterrows():
                 resource_vector = row["resource_vector"] or {}

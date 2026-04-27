@@ -16,6 +16,8 @@ from typing import Optional, List, Dict, Any, Callable
 import pandas as pd
 
 from ..use_cases import ImportDataUseCase, UseCaseResult
+from fire_es.cleaning import load_fact_sheet, clean_fire_data
+from fire_es.schema import RU_COLS, RU_TO_EN
 
 logger = logging.getLogger("ImportDataViewModel")
 
@@ -50,6 +52,8 @@ class ImportDataViewModel:
         # Опции
         self.do_clean = True
         self.do_save_to_db = True
+        self.skip_existing_events = True
+        self.preview_mode = "cleaned"
 
         # Callbacks
         self.on_import_started: Optional[Callable[[], None]] = None
@@ -105,7 +109,21 @@ class ImportDataViewModel:
         """Установить опцию сохранения в БД."""
         self.do_save_to_db = do_save
 
-    def load_preview(self, sheet_name: Optional[str] = None, limit: int = 100) -> bool:
+    def set_skip_existing_events_option(self, skip_existing_events: bool) -> None:
+        """Установить опцию защиты от повторного импорта уже известных событий."""
+        self.skip_existing_events = skip_existing_events
+
+    def set_preview_mode(self, mode: str) -> None:
+        """Установить режим предпросмотра: raw или cleaned."""
+        self.preview_mode = mode
+
+    def load_preview(
+        self,
+        sheet_name: Optional[str] = None,
+        sheet_names: Optional[List[str]] = None,
+        limit: int = 100,
+        mode: Optional[str] = None,
+    ) -> bool:
         """
         Загрузить предпросмотр данных.
 
@@ -121,14 +139,23 @@ class ImportDataViewModel:
             return False
 
         try:
-            if sheet_name is None and self.available_sheets:
-                sheet_name = self.available_sheets[0]
+            selected = list(sheet_names or ([] if sheet_name is None else [sheet_name]))
+            if not selected and self.available_sheets:
+                selected = [self.available_sheets[0]]
+            preview_mode = mode or self.preview_mode
 
-            # Загрузить данные для предпросмотра
-            df = pd.read_excel(self.selected_file, sheet_name=sheet_name, nrows=limit)
+            if preview_mode == "raw":
+                df = self._load_raw_preview(selected, limit=limit)
+            else:
+                df = self._load_cleaned_preview(selected, limit=limit)
             self.preview_data = df
 
-            logger.info(f"Loaded preview: {len(df)} rows from sheet '{sheet_name}'")
+            logger.info(
+                "Loaded preview: %s rows from sheets %s (mode=%s)",
+                len(df),
+                selected,
+                preview_mode,
+            )
             return True
 
         except Exception as e:
@@ -173,7 +200,8 @@ class ImportDataViewModel:
                 sheet_name=sheet_name,
                 sheet_names=sheet_names,
                 clean=self.do_clean,
-                save_to_db=self.do_save_to_db
+                save_to_db=self.do_save_to_db,
+                skip_existing_events=self.skip_existing_events,
             )
 
             if result.success:
@@ -205,6 +233,70 @@ class ImportDataViewModel:
         if self.import_result:
             return self.import_result.get("quality_report", {})
         return None
+
+    def _load_raw_preview(self, sheets: List[str], *, limit: int) -> pd.DataFrame:
+        """Показать Excel почти как есть, без угадывания заголовка."""
+        remaining = limit
+        raw_parts: List[pd.DataFrame] = []
+        for sheet in sheets:
+            if remaining <= 0:
+                break
+            df = pd.read_excel(self.selected_file, sheet_name=sheet, header=None, nrows=remaining)
+            if df.empty:
+                continue
+            df = df.copy()
+            df.insert(0, "Лист", sheet)
+            df.columns = ["Лист", *[self._excel_column_name(i) for i in range(df.shape[1] - 1)]]
+            raw_parts.append(df)
+            remaining -= len(df)
+        return pd.concat(raw_parts, ignore_index=True) if raw_parts else pd.DataFrame()
+
+    def _load_cleaned_preview(self, sheets: List[str], *, limit: int) -> pd.DataFrame:
+        """Показать данные в том виде, как они реально проходят в систему."""
+        remaining = limit
+        parts: List[pd.DataFrame] = []
+        reverse_map = {value: key for key, value in RU_TO_EN.items()}
+        with pd.ExcelFile(self.selected_file) as xl:
+            for sheet in sheets:
+                if remaining <= 0:
+                    break
+                df = load_fact_sheet(sheet, xl, nrows=remaining)
+                if self.do_clean:
+                    df, _ = clean_fire_data(df)
+                    rename_map = {column: reverse_map.get(column, column) for column in df.columns}
+                    df = df.rename(columns=rename_map)
+                    df = self._prepare_display_preview(df)
+                parts.append(df.head(remaining))
+                remaining -= min(len(df), remaining)
+        return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+    def _prepare_display_preview(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Оставить только человекочитаемые очищенные поля для экрана импорта."""
+        ordered_columns: List[str] = []
+        if "source_sheet" in df.columns:
+            ordered_columns.append("source_sheet")
+        ordered_columns.extend(column for column in RU_COLS if column in df.columns)
+        preview_df = df.loc[:, ordered_columns].copy()
+        if "source_sheet" in preview_df.columns:
+            preview_df = preview_df.rename(columns={"source_sheet": "Источник"})
+
+        for column in preview_df.columns:
+            series = preview_df[column]
+            if pd.api.types.is_datetime64_any_dtype(series):
+                preview_df[column] = series.dt.strftime("%Y-%m-%d").fillna("")
+            else:
+                preview_df[column] = series.where(series.notna(), "")
+
+        return preview_df
+
+    @staticmethod
+    def _excel_column_name(index: int) -> str:
+        name = ""
+        current = index + 1
+        while current:
+            current, remainder = divmod(current - 1, 26)
+            name = chr(65 + remainder) + name
+        return name
 
     def reset(self) -> None:
         """Сбросить состояние."""

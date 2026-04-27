@@ -32,9 +32,19 @@ from PySide6.QtWidgets import (
     QHeaderView,
 )
 
-from fire_es.rank_tz_contract import get_input_schema
+from fire_es.rank_tz_contract import DEFAULT_LPR_FEATURE_SET, get_input_schema
 
 from ...viewmodels import LPRDecisionHistoryViewModel
+from ..theme import (
+    configure_form_layout,
+    configure_table,
+    configure_text_panel,
+    create_page_header,
+    create_scrollable_page,
+    create_status_label,
+    style_button,
+    style_label,
+)
 
 
 class LPRDecisionHistoryPage(QWidget):
@@ -46,7 +56,7 @@ class LPRDecisionHistoryPage(QWidget):
         super().__init__()
         self.viewmodel: Optional[LPRDecisionHistoryViewModel] = None
         self.db_path: Optional[Path] = None
-        self.input_schema = get_input_schema("online_tactical")
+        self.input_schema = get_input_schema(DEFAULT_LPR_FEATURE_SET)
         self._all_decisions: list[Dict[str, Any]] = []
 
         self._init_ui()
@@ -54,38 +64,30 @@ class LPRDecisionHistoryPage(QWidget):
         self._render_empty_workspace_state()
 
     def _init_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        _, _, _, layout = create_scrollable_page(self)
 
-        title = QLabel("История решений ЛПР")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: white;")
-        layout.addWidget(title)
+        layout.addWidget(
+            create_page_header(
+                "История решений ЛПР",
+                "Просмотр сохраненных решений, сравнение с прогнозом модели и правка решения или комментария.",
+            )
+        )
 
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(10)
 
         self.refresh_btn = QPushButton("Обновить")
+        style_button(self.refresh_btn, "ghost")
         controls_layout.addWidget(self.refresh_btn)
 
         self.save_btn = QPushButton("Сохранить изменения")
         self.save_btn.setEnabled(False)
-        self.save_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #4caf50;
-                color: white;
-                font-weight: bold;
-            }
-            QPushButton:disabled {
-                background-color: #888888;
-            }
-            """
-        )
+        style_button(self.save_btn, "success")
         controls_layout.addWidget(self.save_btn)
 
         self.reset_btn = QPushButton("Сбросить")
         self.reset_btn.setEnabled(False)
+        style_button(self.reset_btn, "ghost")
         controls_layout.addWidget(self.reset_btn)
 
         controls_layout.addStretch()
@@ -128,19 +130,14 @@ class LPRDecisionHistoryPage(QWidget):
         self.clear_filters_btn = QPushButton("Сбросить фильтры")
         filters_layout.addWidget(self.clear_filters_btn, 3, 0, 1, 2)
 
-        sort_hint = QLabel("Сортировка: клик по заголовку столбца переключает возрастание / убывание")
-        sort_hint.setStyleSheet("font-size: 12px; color: #f0f0f0;")
-        sort_hint.setWordWrap(True)
+        sort_hint = QLabel("Сортировка: нажмите на заголовок столбца, чтобы изменить порядок строк")
+        style_label(sort_hint, "section-hint", word_wrap=True)
         filters_layout.addWidget(sort_hint, 3, 2, 1, 2)
 
         layout.addWidget(filters_group)
 
-        self.status_label = QLabel("")
-        self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("font-size: 12px; color: white;")
+        self.status_label = create_status_label()
         layout.addWidget(self.status_label)
-
-        splitter = QSplitter(Qt.Vertical)
 
         table_group = QGroupBox("Сохраненные решения")
         table_layout = QVBoxLayout(table_group)
@@ -153,75 +150,86 @@ class LPRDecisionHistoryPage(QWidget):
         self.decisions_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.decisions_table.setSelectionMode(QTableWidget.SingleSelection)
         self.decisions_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.decisions_table.setAlternatingRowColors(True)
-        self.decisions_table.verticalHeader().setVisible(False)
-        self.decisions_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        configure_table(self.decisions_table, min_height=320, sortable=True)
+        header = self.decisions_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.decisions_table.setSortingEnabled(True)
         table_layout.addWidget(self.decisions_table)
 
-        splitter.addWidget(table_group)
+        layout.addWidget(table_group)
 
-        details_group = QGroupBox("Карточка решения")
-        details_layout = QVBoxLayout(details_group)
+        meta_group = QGroupBox("Карточка решения")
+        details_layout = QVBoxLayout(meta_group)
 
         meta_layout = QGridLayout()
         meta_layout.addWidget(QLabel("ID решения:"), 0, 0)
         self.decision_id_value = QLabel("—")
+        style_label(self.decision_id_value, "value", word_wrap=True)
         meta_layout.addWidget(self.decision_id_value, 0, 1)
 
         meta_layout.addWidget(QLabel("Дата сохранения:"), 0, 2)
         self.created_at_value = QLabel("—")
+        style_label(self.created_at_value, "value", word_wrap=True)
         meta_layout.addWidget(self.created_at_value, 0, 3)
 
         meta_layout.addWidget(QLabel("Fire ID:"), 1, 0)
         self.fire_id_value = QLabel("—")
+        style_label(self.fire_id_value, "value", word_wrap=True)
         meta_layout.addWidget(self.fire_id_value, 1, 1)
 
         meta_layout.addWidget(QLabel("Прогноз модели:"), 1, 2)
         self.predicted_rank_value = QLabel("—")
+        style_label(self.predicted_rank_value, "value", word_wrap=True)
         meta_layout.addWidget(self.predicted_rank_value, 1, 3)
 
         details_layout.addLayout(meta_layout)
+        layout.addWidget(meta_group)
 
         edit_group = QGroupBox("Редактируемая часть решения")
         edit_layout = QFormLayout(edit_group)
+        configure_form_layout(edit_layout)
 
         self.decision_rank_combo = QComboBox()
         self.decision_rank_combo.addItems(self.EDITABLE_RANKS)
         edit_layout.addRow("Решение ЛПР:", self.decision_rank_combo)
 
         self.comment_edit = QTextEdit()
-        self.comment_edit.setMaximumHeight(90)
+        configure_text_panel(self.comment_edit, min_height=120)
+        self.comment_edit.setMaximumHeight(150)
         self.comment_edit.setPlaceholderText("Комментарий к решению")
         edit_layout.addRow("Комментарий:", self.comment_edit)
 
-        details_layout.addWidget(edit_group)
+        layout.addWidget(edit_group)
 
         snapshot_splitter = QSplitter(Qt.Horizontal)
+        snapshot_splitter.setChildrenCollapsible(False)
 
-        probabilities_group = QGroupBox("Вероятности Top-K")
+        probabilities_group = QGroupBox("Вероятности прогноза")
         probabilities_layout = QVBoxLayout(probabilities_group)
         self.probabilities_text = QTextEdit()
         self.probabilities_text.setReadOnly(True)
+        configure_text_panel(self.probabilities_text, min_height=200)
+        self.probabilities_text.setMaximumHeight(220)
         probabilities_layout.addWidget(self.probabilities_text)
         snapshot_splitter.addWidget(probabilities_group)
 
-        input_group = QGroupBox("Входные данные кейса")
+        input_group = QGroupBox("Входные данные пожара")
         input_layout = QVBoxLayout(input_group)
         self.input_snapshot_text = QTextEdit()
         self.input_snapshot_text.setReadOnly(True)
+        configure_text_panel(self.input_snapshot_text, min_height=200)
+        self.input_snapshot_text.setMaximumHeight(220)
         input_layout.addWidget(self.input_snapshot_text)
         snapshot_splitter.addWidget(input_group)
 
         snapshot_splitter.setStretchFactor(0, 1)
         snapshot_splitter.setStretchFactor(1, 1)
-        details_layout.addWidget(snapshot_splitter)
-
-        splitter.addWidget(details_group)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-
-        layout.addWidget(splitter, 1)
+        layout.addWidget(snapshot_splitter)
 
     def _connect_signals(self) -> None:
         self.refresh_btn.clicked.connect(self._on_refresh)
@@ -270,10 +278,10 @@ class LPRDecisionHistoryPage(QWidget):
             self._clear_detail("Сохраненных решений пока нет")
 
     def _render_empty_workspace_state(self) -> None:
-        self.status_label.setText("Workspace не открыт")
+        self.status_label.setText("Рабочее пространство не открыто")
         self._all_decisions = []
         self.decisions_table.setRowCount(0)
-        self._clear_detail("Откройте workspace, чтобы просмотреть историю решений")
+        self._clear_detail("Откройте рабочее пространство, чтобы просмотреть историю решений")
 
     def _populate_table(
         self,
@@ -314,7 +322,6 @@ class LPRDecisionHistoryPage(QWidget):
                 if selected_decision_id == decision.get("decision_id"):
                     self.decisions_table.selectRow(row)
 
-            self.decisions_table.resizeRowsToContents()
         self.decisions_table.setSortingEnabled(True)
         if self.decisions_table.rowCount() > 0:
             if sort_column >= 0:
@@ -358,7 +365,7 @@ class LPRDecisionHistoryPage(QWidget):
 
     def _on_refresh(self) -> None:
         if not self.viewmodel:
-            QMessageBox.warning(self, "История решений", "Workspace не открыт")
+            QMessageBox.warning(self, "История решений", "Рабочее пространство не открыто")
             return
         self.viewmodel.load_decisions()
 

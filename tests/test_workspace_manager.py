@@ -47,3 +47,13 @@ def test_open_workspace_bootstraps_empty_db_file(tmp_path: Path):
     assert manager.open_workspace(ws_path) is True
     assert _table_exists(ws_path / "fire_es.sqlite", "fires")
 
+
+def test_resolve_workspace_path_accepts_parent_directory(tmp_path: Path):
+    parent = tmp_path / "parent"
+    ws_path = parent / "fire_es_workspace"
+    manager = WorkspaceManager()
+
+    assert manager.create_workspace(ws_path) is True
+    assert manager.resolve_workspace_path(parent) == ws_path
+    assert manager.open_workspace(parent) is True
+    assert manager.get_current_workspace() == ws_path

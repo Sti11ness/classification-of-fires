@@ -19,6 +19,14 @@ from typing import Optional, List, Dict, Any
 
 import json
 
+from ..theme import (
+    configure_table,
+    configure_text_panel,
+    create_page_header,
+    create_static_page,
+    style_button,
+)
+
 
 class LogPage(QWidget):
     """Страница журнала."""
@@ -32,14 +40,15 @@ class LogPage(QWidget):
 
     def _init_ui(self) -> None:
         """Инициализировать UI."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        layout = create_static_page(self)
 
         # Заголовок
-        title = QLabel("Журнал операций")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: white;")
-        layout.addWidget(title)
+        layout.addWidget(
+            create_page_header(
+                "Журнал операций",
+                "Фильтрация, просмотр и экспорт событий приложения, фоновых задач и сервисных операций.",
+            )
+        )
 
         # Фильтры
         filter_group = QGroupBox("Фильтры")
@@ -71,7 +80,7 @@ class LogPage(QWidget):
         self.logs_table.setHorizontalHeaderLabels([
             "Время", "Уровень", "Источник", "Сообщение", "Данные"
         ])
-        self.logs_table.setAlternatingRowColors(True)
+        configure_table(self.logs_table, min_height=360)
         self._configure_table_columns()
         logs_layout.addWidget(self.logs_table)
 
@@ -80,12 +89,15 @@ class LogPage(QWidget):
         buttons_layout.setSpacing(10)
 
         self.refresh_btn = QPushButton("Обновить")
+        style_button(self.refresh_btn, "ghost")
         buttons_layout.addWidget(self.refresh_btn)
 
         self.export_btn = QPushButton("Экспорт")
+        style_button(self.export_btn, "primary")
         buttons_layout.addWidget(self.export_btn)
 
         self.open_log_btn = QPushButton("Открыть лог")
+        style_button(self.open_log_btn, "ghost")
         buttons_layout.addWidget(self.open_log_btn)
 
         buttons_layout.addStretch()
@@ -100,7 +112,7 @@ class LogPage(QWidget):
 
         self.details_text = QTextEdit()
         self.details_text.setReadOnly(True)
-        self.details_text.setFixedHeight(150)
+        configure_text_panel(self.details_text, min_height=180)
         details_layout.addWidget(self.details_text)
 
         layout.addWidget(details_group)
@@ -134,9 +146,6 @@ class LogPage(QWidget):
         if not self.log_store:
             return
 
-        self.logs_table.setRowCount(0)
-        self._configure_table_columns()
-
         # Получить уровень фильтра
         level_filter = self.level_combo.currentText()
         if level_filter == "Все":
@@ -144,51 +153,59 @@ class LogPage(QWidget):
 
         operations = self.log_store.get_operations(limit=100)
 
-        for entry in reversed(operations):
-            # Применить фильтр по уровню
-            if level_filter and entry.level.value != level_filter.lower():
-                continue
+        self.logs_table.setUpdatesEnabled(False)
+        try:
+            self.logs_table.setRowCount(0)
+            self._configure_table_columns()
 
-            row = self.logs_table.rowCount()
-            self.logs_table.insertRow(row)
+            for entry in reversed(operations):
+                # Применить фильтр по уровню
+                if level_filter and entry.level.value != level_filter.lower():
+                    continue
 
-            # Время
-            item = QTableWidgetItem(entry.timestamp.strftime("%Y-%m-%d %H:%M:%S"))
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.logs_table.setItem(row, 0, item)
+                row = self.logs_table.rowCount()
+                self.logs_table.insertRow(row)
 
-            # Уровень
-            item = QTableWidgetItem(entry.level.value.upper())
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.logs_table.setItem(row, 1, item)
+                # Время
+                item = QTableWidgetItem(entry.timestamp.strftime("%Y-%m-%d %H:%M:%S"))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.logs_table.setItem(row, 0, item)
 
-            # Источник
-            item = QTableWidgetItem(entry.source)
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.logs_table.setItem(row, 2, item)
+                # Уровень
+                item = QTableWidgetItem(entry.level.value.upper())
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.logs_table.setItem(row, 1, item)
 
-            # Сообщение
-            item = QTableWidgetItem(entry.message)
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.logs_table.setItem(row, 3, item)
+                # Источник
+                item = QTableWidgetItem(entry.source)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.logs_table.setItem(row, 2, item)
 
-            # Данные
-            data_str = json.dumps(entry.data, ensure_ascii=False) if entry.data else ""
-            item = QTableWidgetItem(data_str)
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.logs_table.setItem(row, 4, item)
+                # Сообщение
+                item = QTableWidgetItem(entry.message)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.logs_table.setItem(row, 3, item)
 
-        self.logs_table.resizeRowsToContents()
+                # Данные
+                data_str = json.dumps(entry.data, ensure_ascii=False) if entry.data else ""
+                item = QTableWidgetItem(data_str)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.logs_table.setItem(row, 4, item)
+        finally:
+            self.logs_table.setUpdatesEnabled(True)
 
     def _configure_table_columns(self) -> None:
         """Зафиксировать стабильную геометрию колонок журнала."""
         header = self.logs_table.horizontalHeader()
         header.setMinimumSectionSize(80)
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
         header.setSectionResizeMode(3, QHeaderView.Stretch)
         header.setSectionResizeMode(4, QHeaderView.Stretch)
+        self.logs_table.setColumnWidth(0, 160)
+        self.logs_table.setColumnWidth(1, 100)
+        self.logs_table.setColumnWidth(2, 160)
 
     def _on_cell_clicked(self, row: int, col: int) -> None:
         """Клик по ячейке."""

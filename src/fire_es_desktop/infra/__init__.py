@@ -14,6 +14,7 @@ from .db_repository import DbRepository
 from .artifact_store import ArtifactStore
 from .model_registry import ModelRegistry
 from .log_store import LogStore, LogLevel, LogEntry
+from .training_data_store import TrainingDataStore
 
 __all__ = [
     "DbRepository",
@@ -22,4 +23,5 @@ __all__ = [
     "LogStore",
     "LogLevel",
     "LogEntry",
+    "TrainingDataStore",
 ]

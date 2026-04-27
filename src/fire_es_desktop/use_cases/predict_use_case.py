@@ -58,7 +58,7 @@ class PredictUseCase(BaseUseCase):
         warnings: list[str] = []
 
         try:
-            self.report_progress(1, 3, "Загрузка production-модели")
+            self.report_progress(1, 3, "Загрузка рабочей модели")
             self.check_cancelled()
 
             if input_data is None:
@@ -68,11 +68,11 @@ class PredictUseCase(BaseUseCase):
                     warnings=warnings,
                 )
 
-            model_info = self._resolve_model_info(model_id=model_id)
+            model_info, model_error_message = self._resolve_model_info(model_id=model_id)
             if not model_info:
                 return UseCaseResult(
                     success=False,
-                    message="Нет активной production-safe модели rank_tz для ЛПР",
+                    message=model_error_message or "Рабочая модель для прогноза ЛПР не выбрана",
                     warnings=warnings,
                 )
 
@@ -82,8 +82,8 @@ class PredictUseCase(BaseUseCase):
                 return UseCaseResult(
                     success=False,
                     message=(
-                        "У активной модели отсутствует preprocessor artifact. "
-                        "Переобучите модель через новый ML pipeline."
+                        "У выбранной модели отсутствует файл подготовки признаков. "
+                        "Переобучите модель заново."
                     ),
                     warnings=warnings,
                 )
@@ -92,7 +92,7 @@ class PredictUseCase(BaseUseCase):
             if not artifact_path.exists() or not preprocessor_path.exists():
                 return UseCaseResult(
                     success=False,
-                    message="Не найдены артефакты активной production модели",
+                    message="Не найдены файлы рабочей модели",
                     warnings=warnings,
                 )
 
@@ -217,18 +217,26 @@ class PredictUseCase(BaseUseCase):
 
     def get_input_contract(self, model_id: Optional[str] = None) -> dict[str, Any]:
         """Return the input schema contract for LPR UI construction."""
-        model_info = self._resolve_model_info(model_id=model_id)
+        model_info, model_error_message = self._resolve_model_info(model_id=model_id)
         if not model_info:
             spec = get_feature_set_spec(DEFAULT_LPR_FEATURE_SET)
+            active_info = self._resolve_raw_active_model_info()
+            if active_info and not self._is_model_safe(active_info):
+                model_status = "Текущая активная модель не подходит для прогноза ЛПР"
+                warnings = self._build_activation_reasons(active_info)
+            else:
+                model_status = model_error_message or "Рабочая модель для прогноза ЛПР не выбрана"
+                warnings = ["Используется базовая форма ввода до выбора рабочей модели"]
             return {
                 "model_id": None,
+                "model_status": model_status,
                 "feature_set": spec["feature_set"],
                 "availability_stage": spec["availability_stage"],
                 "deployment_role": spec["deployment_role"],
                 "semantic_target": spec["semantic_target_default"],
                 "input_schema": get_input_schema(spec["feature_set"]),
                 "feature_order": spec["feature_order"],
-                "warnings": ["Используется fallback dispatch schema до активации production-модели"],
+                "warnings": warnings,
                 "fallback": True,
             }
         input_schema = model_info.get("input_schema")
@@ -242,9 +250,10 @@ class PredictUseCase(BaseUseCase):
                 input_schema = get_input_schema(model_info.get("feature_set", DEFAULT_LPR_FEATURE_SET))
         warnings = []
         if model_info.get("feature_set") == "online_tactical" or model_info.get("legacy_alias"):
-            warnings.append("Активная модель использует legacy alias online_tactical")
+            warnings.append("Активная модель использует устаревшую схему признаков")
         return {
             "model_id": model_info.get("model_id"),
+            "model_status": "Для прогноза используется рабочая модель",
             "feature_set": model_info.get("feature_set"),
             "availability_stage": model_info.get("availability_stage"),
             "deployment_role": model_info.get("deployment_role"),
@@ -257,20 +266,44 @@ class PredictUseCase(BaseUseCase):
             "fallback": False,
         }
 
-    def _resolve_model_info(self, model_id: Optional[str]) -> Optional[dict[str, Any]]:
+    def _resolve_model_info(self, model_id: Optional[str]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
         from ..infra import ModelRegistry
 
         registry = ModelRegistry(self.models_path)
         if model_id:
             model_info = registry.get_model_info(model_id)
             if not model_info:
-                return None
-            return model_info if registry.is_model_production_safe(model_info) else None
+                return None, "Выбранная модель не найдена"
+            if registry.is_model_production_safe(model_info):
+                return model_info, None
+            reasons = registry.get_production_unsafe_reasons(model_info)
+            return None, "Выбранная модель не подходит для прогноза ЛПР: " + "; ".join(reasons)
 
         active = registry.get_active_model_info()
         if active and registry.is_model_production_safe(active):
-            return active
-        return None
+            return active, None
+        if active:
+            reasons = registry.get_production_unsafe_reasons(active)
+            return None, "Текущая активная модель не подходит для прогноза ЛПР: " + "; ".join(reasons)
+        return None, "Рабочая модель для прогноза ЛПР не выбрана"
+
+    def _resolve_raw_active_model_info(self) -> Optional[dict[str, Any]]:
+        from ..infra import ModelRegistry
+
+        registry = ModelRegistry(self.models_path)
+        return registry.get_active_model_info()
+
+    def _is_model_safe(self, model_info: dict[str, Any]) -> bool:
+        from ..infra import ModelRegistry
+
+        registry = ModelRegistry(self.models_path)
+        return registry.is_model_production_safe(model_info)
+
+    def _build_activation_reasons(self, model_info: dict[str, Any]) -> list[str]:
+        from ..infra import ModelRegistry
+
+        registry = ModelRegistry(self.models_path)
+        return registry.get_production_unsafe_reasons(model_info)
 
     def _build_model_warnings(
         self,
@@ -280,19 +313,19 @@ class PredictUseCase(BaseUseCase):
     ) -> list[str]:
         warnings: list[str] = []
         if model_info.get("semantic_target") != SEMANTIC_TARGET_RANK_TZ_VECTOR:
-            warnings.append("Модель не относится к canonical rank_tz_vector contour")
+            warnings.append("Модель использует другой тип целевой разметки")
         if model_info.get("availability_stage") == AVAILABILITY_STAGE_RETROSPECTIVE:
-            warnings.append("Retrospective model cannot be used as operational LPR model")
+            warnings.append("Модель относится к архивному режиму и не подходит для ЛПР")
         if model_info.get("feature_set") == "online_tactical" or model_info.get("legacy_alias"):
-            warnings.append("Legacy online_tactical schema is not canonical dispatch input")
+            warnings.append("Используется устаревшая схема признаков")
         if model_info.get("event_overlap_rate", 0.0) != 0.0:
-            warnings.append("Model was evaluated with non-zero event overlap")
+            warnings.append("При проверке качества пересекались одни и те же события")
         if model_info.get("split_protocol") == "row_random_legacy":
-            warnings.append("Legacy row-random split is not leakage-safe")
+            warnings.append("Использована устаревшая схема разделения выборки")
         if confidence < 0.5:
-            warnings.append("Low model confidence")
+            warnings.append("Низкая уверенность прогноза")
         if entropy > 1.2:
-            warnings.append("High predictive entropy")
+            warnings.append("Высокая неопределенность прогноза")
         if model_info.get("calibration_status") in (None, "not_calibrated"):
-            warnings.append("Probabilities are not calibrated")
+            warnings.append("Вероятности не калиброваны")
         return warnings

@@ -11,6 +11,8 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable
 
+from fire_es.rank_tz_contract import PRODUCTION_DEPLOYMENT_ROLE
+
 from ..workspace.workspace_manager import WorkspaceManager
 from ..infra import DbRepository, ModelRegistry, LogStore
 
@@ -58,7 +60,7 @@ class ProjectViewModel:
                 return True
             else:
                 if self.on_error:
-                    self.on_error("Не удалось создать Workspace")
+                    self.on_error("Не удалось создать рабочее пространство")
                 return False
         except Exception as e:
             logger.error(f"Create workspace failed: {e}", exc_info=True)
@@ -79,12 +81,16 @@ class ProjectViewModel:
         try:
             success = self.workspace_manager.open_workspace(path)
             if success:
-                self._open_workspace_internal(path)
-                logger.info(f"Opened workspace: {path}")
+                resolved_path = self.workspace_manager.get_current_workspace() or path
+                self._open_workspace_internal(resolved_path)
+                logger.info(f"Opened workspace: {resolved_path}")
                 return True
             else:
                 if self.on_error:
-                    self.on_error("Не удалось открыть Workspace")
+                    self.on_error(
+                        "Не удалось открыть рабочее пространство. "
+                        "Выберите папку fire_es_workspace или папку, внутри которой она лежит."
+                    )
                 return False
         except Exception as e:
             logger.error(f"Open workspace failed: {e}", exc_info=True)
@@ -142,14 +148,37 @@ class ProjectViewModel:
 
     def refresh_stats(self) -> None:
         """Обновить статистику проекта."""
-        if not self.is_workspace_open or not self.db_repo:
+        if not self.is_workspace_open:
             return
 
         try:
-            stats = self.db_repo.get_stats()
+            stats = self.db_repo.get_stats() if self.db_repo else {}
+            if self.model_registry:
+                registry_models = self.model_registry.list_models()
+                active_registry_model = self.model_registry.get_active_model_info()
+                working_model = self.model_registry.get_active_model_for_role(
+                    target="rank_tz",
+                    deployment_role=PRODUCTION_DEPLOYMENT_ROLE,
+                )
+                stats["models_count"] = len(registry_models)
+                stats["active_registry_model_name"] = (
+                    active_registry_model.get("name") if active_registry_model else None
+                )
+                stats["working_model_name"] = (
+                    working_model.get("name") if working_model else None
+                )
             self.project_stats = stats
         except Exception as e:
             logger.error(f"Refresh stats failed: {e}", exc_info=True)
+
+    def get_lpr_working_model_info(self) -> Optional[Dict[str, Any]]:
+        """Получить рабочую модель, пригодную для прогноза ЛПР."""
+        if not self.model_registry:
+            return None
+        return self.model_registry.get_active_model_for_role(
+            target="rank_tz",
+            deployment_role=PRODUCTION_DEPLOYMENT_ROLE,
+        )
 
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -196,6 +225,6 @@ class ProjectViewModel:
             (валидно, сообщение).
         """
         if not self.workspace_manager:
-            return False, "Workspace не открыт"
+            return False, "Рабочее пространство не открыто"
 
         return self.workspace_manager.validate_workspace()

@@ -8,6 +8,7 @@ from .lpr_decision_history_page import LPRDecisionHistoryPage
 from .models_page import ModelsPage
 from .log_page import LogPage
 from .batch_predict_page import BatchPredictPage
+from .digital_twin_page import DigitalTwinPage
 
 __all__ = [
     "ProjectPage",
@@ -18,4 +19,5 @@ __all__ = [
     "ModelsPage",
     "LogPage",
     "BatchPredictPage",
+    "DigitalTwinPage",
 ]

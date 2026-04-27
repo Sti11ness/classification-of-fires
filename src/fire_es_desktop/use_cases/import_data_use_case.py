@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 import pandas as pd
+from sqlalchemy import bindparam, text
 
 from .base_use_case import BaseUseCase, UseCaseResult, UseCaseStatus
 
@@ -21,7 +22,8 @@ from pathlib import Path as PPath
 sys.path.insert(0, str(PPath(__file__).parent.parent.parent / "fire_es"))
 
 from fire_es.cleaning import load_fact_sheet, clean_fire_data
-from fire_es.db import DatabaseManager
+from fire_es.db import DatabaseManager, FIRES_HISTORICAL_TABLE
+from ..infra import TrainingDataStore
 
 logger = logging.getLogger("ImportDataUseCase")
 
@@ -71,7 +73,8 @@ class ImportDataUseCase(BaseUseCase):
         sheet_name: Optional[str] = None,
         sheet_names: Optional[List[str]] = None,
         clean: bool = True,
-        save_to_db: bool = True
+        save_to_db: bool = True,
+        skip_existing_events: bool = True,
     ) -> UseCaseResult:
         """
         Выполнить импорт данных.
@@ -137,12 +140,25 @@ class ImportDataUseCase(BaseUseCase):
                 self.check_cancelled()
 
                 clean_df, quality_report = clean_fire_data(raw_df)
+                dropped_internal_duplicates = 0
+                if "is_canonical_event_record" in clean_df.columns:
+                    before_dedup = len(clean_df)
+                    clean_df = clean_df.loc[
+                        clean_df["is_canonical_event_record"].fillna(True).astype(bool)
+                    ].reset_index(drop=True)
+                    dropped_internal_duplicates = before_dedup - len(clean_df)
+                    quality_report["dropped_internal_duplicates"] = dropped_internal_duplicates
+                    quality_report["canonical_rows_after_cleanup"] = int(len(clean_df))
 
                 # Предупреждения о качестве
                 if quality_report:
-                    duplicates = quality_report.get("duplicates_count", 0)
+                    duplicates = quality_report.get("duplicates_count", quality_report.get("duplicate_rows", 0))
                     if duplicates > 0:
                         warnings.append(f"Найдено дубликатов: {duplicates}")
+                    if dropped_internal_duplicates > 0:
+                        warnings.append(
+                            f"Удалено внутренних дублей при очистке: {dropped_internal_duplicates}"
+                        )
 
                     invalid_dates = quality_report.get("invalid_dates_count", 0)
                     if invalid_dates > 0:
@@ -164,6 +180,8 @@ class ImportDataUseCase(BaseUseCase):
 
                 db = DatabaseManager(str(self.db_path))
                 db.create_tables()
+                training_store = TrainingDataStore(self.db_path)
+                skipped_existing_duplicates = 0
 
                 # Конвертировать DataFrame в список словарей
                 records = clean_df.to_dict('records')
@@ -175,31 +193,36 @@ class ImportDataUseCase(BaseUseCase):
                 # Пакетная вставка
                 added_count = 0
                 if records:
-                    # Используем SQLAlchemy bulk insert
-                    from fire_es.db import Fire
-                    from sqlalchemy.orm import sessionmaker
-
                     engine = db.engine
+                    from sqlalchemy.orm import sessionmaker
                     Session = sessionmaker(bind=engine)
-                    fire_columns = {c.name for c in Fire.__table__.columns}
+                    fire_columns = {c.name for c in FIRES_HISTORICAL_TABLE.columns}
 
                     with Session() as session:
-                        # Создать объекты Fire
-                        fires = []
+                        if skip_existing_events and records:
+                            records, skipped_existing_duplicates = self._filter_existing_events(
+                                session,
+                                records,
+                            )
+                            if skipped_existing_duplicates:
+                                warnings.append(
+                                    f"Пропущено уже известных событий: {skipped_existing_duplicates}"
+                                )
+
+                        historical_records = []
                         for record in records:
                             clean_record = {}
                             for k, v in record.items():
                                 if k not in fire_columns:
                                     continue
                                 clean_record[k] = _normalize_db_value(v)
-                            fire = Fire(**clean_record)
-                            fires.append(fire)
+                            historical_records.append(clean_record)
 
-                        session.bulk_save_objects(fires)
-                        session.commit()
-                        added_count = len(fires)
+                        added_count = training_store.insert_historical_records(historical_records)
 
                 self.report_progress(4, 4, "Импорт завершён")
+                training_store.close()
+                db.close()
 
                 return UseCaseResult(
                     success=True,
@@ -208,6 +231,7 @@ class ImportDataUseCase(BaseUseCase):
                         "loaded_rows": len(raw_df),
                         "clean_rows": len(clean_df),
                         "added_to_db": added_count,
+                        "skipped_existing_duplicates": skipped_existing_duplicates if save_to_db else 0,
                         "quality_report": quality_report
                     },
                     warnings=warnings
@@ -238,3 +262,64 @@ class ImportDataUseCase(BaseUseCase):
                 error=str(e),
                 warnings=warnings
             )
+
+    @staticmethod
+    def _chunked(values: list[str], chunk_size: int = 800) -> list[list[str]]:
+        return [values[index:index + chunk_size] for index in range(0, len(values), chunk_size)]
+
+    def _filter_existing_events(
+        self,
+        session,
+        records: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Skip rows whose event identity is already present in the workspace."""
+        incoming_event_ids = sorted(
+            {
+                str(record["event_id"])
+                for record in records
+                if record.get("event_id") not in (None, "")
+            }
+        )
+        incoming_fingerprints = sorted(
+            {
+                str(record["event_fingerprint"])
+                for record in records
+                if record.get("event_fingerprint") not in (None, "")
+            }
+        )
+        existing_event_ids: set[str] = set()
+        existing_fingerprints: set[str] = set()
+
+        for chunk in self._chunked(incoming_event_ids):
+            rows = session.execute(
+                text(
+                    "SELECT event_id FROM fires_historical "
+                    "WHERE event_id IN :event_ids"
+                ).bindparams(bindparam("event_ids", expanding=True)),
+                {"event_ids": chunk},
+            ).all()
+            existing_event_ids.update(value for value, in rows if value)
+
+        for chunk in self._chunked(incoming_fingerprints):
+            rows = session.execute(
+                text(
+                    "SELECT event_fingerprint FROM fires_historical "
+                    "WHERE event_fingerprint IN :event_fingerprints"
+                ).bindparams(bindparam("event_fingerprints", expanding=True)),
+                {"event_fingerprints": chunk},
+            ).all()
+            existing_fingerprints.update(value for value, in rows if value)
+
+        filtered_records: list[Dict[str, Any]] = []
+        skipped_count = 0
+        for record in records:
+            event_id = record.get("event_id")
+            fingerprint = record.get("event_fingerprint")
+            if (event_id and event_id in existing_event_ids) or (
+                fingerprint and fingerprint in existing_fingerprints
+            ):
+                skipped_count += 1
+                continue
+            filtered_records.append(record)
+
+        return filtered_records, skipped_count

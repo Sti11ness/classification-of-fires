@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from .base_use_case import BaseUseCase, UseCaseResult, UseCaseStatus
@@ -49,10 +49,19 @@ class AssignRankTzUseCase(BaseUseCase):
         target_definition: str = SEMANTIC_TARGET_RANK_TZ_VECTOR,
         batch_size: int = 500,
         override_human_verified: bool = False,
+        override_existing_labels: bool = False,
+        source_table: str = "fires",
     ) -> UseCaseResult:
         self.status = UseCaseStatus.RUNNING
         self._cancel_requested = False
         warnings: list[str] = []
+        allowed_source_tables = {"fires", "fires_historical", "fires_lpr_train"}
+        if source_table not in allowed_source_tables:
+            return UseCaseResult(
+                success=False,
+                message=f"Неподдерживаемый источник разметки: {source_table}",
+                warnings=warnings,
+            )
 
         try:
             db = DatabaseManager(str(self.db_path))
@@ -62,7 +71,7 @@ class AssignRankTzUseCase(BaseUseCase):
             self.check_cancelled()
 
             engine = create_engine(f"sqlite:///{self.db_path}")
-            df = pd.read_sql("SELECT * FROM fires", engine)
+            df = pd.read_sql(f"SELECT * FROM {source_table}", engine)
             if df.empty:
                 db.close()
                 return UseCaseResult(success=False, message="Нет данных в БД", warnings=warnings)
@@ -71,9 +80,21 @@ class AssignRankTzUseCase(BaseUseCase):
             lpr_decision_mask = (
                 df.get("rank_label_source", pd.Series(index=df.index, dtype=object)).fillna("").eq("lpr_decision")
             )
+            existing_label_mask = (
+                df.get("rank_tz", pd.Series(index=df.index, dtype=float)).notna()
+                | df.get("rank_tz_vector", pd.Series(index=df.index, dtype=float)).notna()
+                | df.get("rank_tz_count_proxy", pd.Series(index=df.index, dtype=float)).notna()
+                | df.get("rank_label_source", pd.Series(index=df.index, dtype=object)).fillna("").ne("")
+            )
+            existing_label_only_mask = existing_label_mask & ~human_verified_mask & ~lpr_decision_mask
             protected_mask = human_verified_mask | lpr_decision_mask
+            if not override_existing_labels:
+                protected_mask = protected_mask | existing_label_only_mask
             human_verified_skipped_count = int(human_verified_mask.sum())
             lpr_decision_skipped_count = int(lpr_decision_mask.sum())
+            existing_label_count = int(existing_label_only_mask.sum())
+            existing_label_skipped_count = existing_label_count if not override_existing_labels else 0
+            existing_label_recalculated_count = existing_label_count if override_existing_labels else 0
             overridden_count = 0
             if protected_mask.any() and not override_human_verified:
                 candidate_df = df.loc[~protected_mask].copy()
@@ -82,6 +103,31 @@ class AssignRankTzUseCase(BaseUseCase):
                 if protected_mask.any() and override_human_verified:
                     overridden_count = int(protected_mask.sum())
                     warnings.append("Override enabled: human-verified labels may be recalculated")
+            if existing_label_only_mask.any() and override_existing_labels:
+                warnings.append("Override enabled: existing historical labels may be recalculated")
+
+            if candidate_df.empty:
+                db.close()
+                self.report_progress(4, 4, "Новых строк для разметки нет")
+                return UseCaseResult(
+                    success=True,
+                    message="Новых строк для разметки нет",
+                    data={
+                        "total_records": 0,
+                        "updated_records": 0,
+                        "assigned_records": 0,
+                        "rank_distribution": {},
+                        "null_count": 0,
+                        "semantic_target": target_definition,
+                        "human_verified_skipped_count": human_verified_skipped_count,
+                        "lpr_decision_skipped_count": lpr_decision_skipped_count,
+                        "existing_label_skipped_count": existing_label_skipped_count,
+                        "existing_label_recalculated_count": existing_label_recalculated_count,
+                        "overridden_count": overridden_count,
+                        "top_unparsed_equipment_formats": [],
+                    },
+                    warnings=warnings,
+                )
 
             self.report_progress(2, 4, "Расчет рангов")
             self.check_cancelled()
@@ -115,6 +161,7 @@ class AssignRankTzUseCase(BaseUseCase):
 
             Session = sessionmaker(bind=engine)
             updated_count = 0
+            assigned_count = 0
             update_columns = [
                 "rank_tz",
                 "rank_distance",
@@ -135,7 +182,15 @@ class AssignRankTzUseCase(BaseUseCase):
                         if target_definition == SEMANTIC_TARGET_RANK_TZ_COUNT_PROXY and pd.notna(row.get("rank_tz_count_proxy")):
                             payload["rank_tz"] = row.get("rank_tz_count_proxy")
                         payload["rank_label_source"] = label_source if payload.get("rank_tz") is not None else None
-                        session.query(Fire).filter(Fire.id == row["id"]).update(payload)
+                        if payload.get("rank_tz") is not None:
+                            assigned_count += 1
+                        assignments = ", ".join(f"{column} = :{column}" for column in payload.keys())
+                        statement = text(
+                            f"UPDATE {source_table} SET {assignments} WHERE id = :id"
+                        )
+                        params = dict(payload)
+                        params["id"] = row["id"]
+                        session.execute(statement, params)
                     session.commit()
                     updated_count += len(batch)
 
@@ -147,12 +202,15 @@ class AssignRankTzUseCase(BaseUseCase):
                 data={
                     "total_records": len(labeled),
                     "updated_records": updated_count,
+                    "assigned_records": assigned_count,
                     "rank_distribution": rank_distribution,
                     "null_count": null_count,
                     "semantic_target": target_definition,
-                    "human_verified_skipped_count": human_verified_skipped_count,
-                    "lpr_decision_skipped_count": lpr_decision_skipped_count,
-                    "overridden_count": overridden_count,
+                        "human_verified_skipped_count": human_verified_skipped_count,
+                        "lpr_decision_skipped_count": lpr_decision_skipped_count,
+                        "existing_label_skipped_count": existing_label_skipped_count,
+                        "existing_label_recalculated_count": existing_label_recalculated_count,
+                        "overridden_count": overridden_count,
                     "top_unparsed_equipment_formats": (
                         unparsed_equipment_report.to_dict(orient="records")
                         if not unparsed_equipment_report.empty

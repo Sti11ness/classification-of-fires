@@ -10,17 +10,28 @@ BatchPredictPage — экран пакетного прогноза.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QFormLayout, QFileDialog, QProgressBar,
-    QMessageBox, QComboBox, QSpinBox, QCheckBox, QTextEdit
+    QGroupBox, QFileDialog, QProgressBar,
+    QMessageBox, QComboBox, QSpinBox, QCheckBox, QTextEdit,
+    QBoxLayout, QSizePolicy
 )
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 import logging
 
 logger = logging.getLogger("BatchPredictPage")
+
+from ..theme import (
+    configure_text_panel,
+    create_hint,
+    create_page_header,
+    create_static_page,
+    create_status_label,
+    ResponsiveFormWidget,
+    style_button,
+    style_label,
+)
 
 
 class BatchPredictWorker(QThread):
@@ -55,6 +66,37 @@ class BatchPredictWorker(QThread):
             self.error.emit(str(e))
 
 
+class ResponsiveInlineWidget(QWidget):
+    """Inline widget that switches between horizontal and vertical layouts."""
+
+    def __init__(self, *, compact_breakpoint: int = 1100):
+        super().__init__()
+        self._compact_breakpoint = compact_breakpoint
+        self._compact_mode: Optional[bool] = None
+        self._layout = QBoxLayout(QBoxLayout.LeftToRight, self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(10)
+
+    def addWidget(self, widget: QWidget, stretch: int = 0) -> None:  # noqa: N802 - Qt naming
+        self._layout.addWidget(widget, stretch)
+
+    def setCompactBreakpoint(self, width: int) -> None:  # noqa: N802 - Qt naming
+        self._compact_breakpoint = width
+        self._update_layout(force=True)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_layout()
+
+    def _update_layout(self, *, force: bool = False) -> None:
+        compact = self.width() < self._compact_breakpoint if self.width() > 0 else False
+        if not force and compact == self._compact_mode:
+            return
+        self._compact_mode = compact
+        self._layout.setDirection(QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight)
+        self._layout.setAlignment(Qt.AlignTop)
+
+
 class BatchPredictPage(QWidget):
     """
     Страница пакетного прогноза.
@@ -69,95 +111,93 @@ class BatchPredictPage(QWidget):
 
     def _init_ui(self) -> None:
         """Инициализировать UI."""
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(15)
+        main_layout = create_static_page(self)
 
         # Заголовок
-        title = QLabel("Пакетный прогноз")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: white;")
-        main_layout.addWidget(title)
+        main_layout.addWidget(
+            create_page_header(
+                "Пакетный прогноз",
+                "Массовый прогон активной модели по Excel-файлу и экспорт результатов в таблицу.",
+            )
+        )
 
         # Зона 1: Выбор файла
         file_group = QGroupBox("Входные данные")
-        file_layout = QFormLayout(file_group)
+        file_layout = QVBoxLayout(file_group)
+        self.file_form = ResponsiveFormWidget(compact_breakpoint=1260)
+        file_layout.addWidget(self.file_form)
 
         # Путь к файлу
-        file_path_layout = QHBoxLayout()
+        self.file_path_widget = ResponsiveInlineWidget(compact_breakpoint=920)
         self.file_path_edit = QLabel("Не выбран")
         self.file_path_edit.setWordWrap(True)
-        file_path_layout.addWidget(self.file_path_edit)
+        self.file_path_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        style_label(self.file_path_edit, "muted", word_wrap=True)
+        self.file_path_widget.addWidget(self.file_path_edit, 1)
 
         select_btn = QPushButton("Выбрать файл")
-        select_btn.setFixedWidth(120)
+        style_button(select_btn, "primary")
+        select_btn.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         select_btn.clicked.connect(self._on_select_file)
-        file_path_layout.addWidget(select_btn)
+        self.file_path_widget.addWidget(select_btn)
 
-        file_layout.addRow("Excel файл:", file_path_layout)
+        self.file_form.add_row("Excel-файл:", self.file_path_widget)
 
         # Источник данных
         self.source_combo = QComboBox()
         self.source_combo.addItems(["Excel файл", "База данных (недоступно)"])
         self.source_combo.setCurrentIndex(0)
         self.source_combo.setEnabled(True)  # Только Excel пока
-        file_layout.addRow("Источник данных:", self.source_combo)
+        self.source_combo.setMinimumWidth(0)
+        self.file_form.add_row("Источник данных:", self.source_combo)
 
         main_layout.addWidget(file_group)
 
         # Зона 2: Параметры прогноза
         params_group = QGroupBox("Параметры прогноза")
-        params_layout = QFormLayout(params_group)
+        params_layout = QVBoxLayout(params_group)
+        self.params_form = ResponsiveFormWidget(compact_breakpoint=1260)
+        params_layout.addWidget(self.params_form)
 
         # Формат экспорта
         self.format_combo = QComboBox()
         self.format_combo.addItems(["Excel (.xlsx)", "CSV (.csv)"])
-        params_layout.addRow("Формат экспорта:", self.format_combo)
+        self.format_combo.setMinimumWidth(0)
+        self.params_form.add_row("Формат экспорта:", self.format_combo)
 
         # Набор признаков
         self.feature_combo = QComboBox()
         self.feature_combo.addItems([
-            "online_tactical (production contract)"
+            "online_tactical (служебный режим)"
         ])
         self.feature_combo.setEnabled(False)
-        params_layout.addRow("Набор признаков:", self.feature_combo)
+        self.feature_combo.setMinimumWidth(0)
+        self.params_form.add_row("Набор признаков:", self.feature_combo)
 
         # Top-K
         self.top_k_spin = QSpinBox()
         self.top_k_spin.setRange(1, 5)
         self.top_k_spin.setValue(3)
-        params_layout.addRow("Количество вариантов (Top-K):", self.top_k_spin)
+        self.top_k_spin.setMinimumWidth(0)
+        self.params_form.add_row("Количество вероятных вариантов:", self.top_k_spin, full_width=True)
 
         # Бутстрап
         self.bootstrap_check = QCheckBox("Использовать бутстрап")
         self.bootstrap_check.setChecked(True)
-        params_layout.addRow(self.bootstrap_check)
+        self.params_form.add_full_width(self.bootstrap_check)
 
         # N бутстрап
         self.n_bootstrap_spin = QSpinBox()
         self.n_bootstrap_spin.setRange(10, 100)
         self.n_bootstrap_spin.setValue(30)
-        params_layout.addRow("Количество бутстрап-выборок:", self.n_bootstrap_spin)
+        self.n_bootstrap_spin.setMinimumWidth(0)
+        self.params_form.add_row("Количество бутстрап-выборок:", self.n_bootstrap_spin, full_width=True)
 
         main_layout.addWidget(params_group)
 
         # Кнопка запуска
         self.start_btn = QPushButton("Запустить пакетный прогноз")
-        self.start_btn.setFixedHeight(45)
-        self.start_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196f3;
-                color: white;
-                font-weight: bold;
-                font-size: 16px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #2085d9;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-            }
-        """)
+        style_button(self.start_btn, "primary", large=True)
         main_layout.addWidget(self.start_btn)
 
         # Прогресс
@@ -167,9 +207,8 @@ class BatchPredictPage(QWidget):
         main_layout.addWidget(self.progress_bar)
 
         # Статус
-        self.status_label = QLabel("")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet("font-size: 12px;")
+        self.status_label = create_status_label()
+        self.status_label.setText("Выберите файл и проверьте параметры пакетного прогона.")
         main_layout.addWidget(self.status_label)
 
         # Результат
@@ -178,14 +217,21 @@ class BatchPredictPage(QWidget):
 
         self.result_label = QLabel("Нет результатов")
         self.result_label.setWordWrap(True)
+        style_label(self.result_label, "muted", word_wrap=True)
         result_layout.addWidget(self.result_label)
 
         # Предупреждения
         self.warnings_edit = QTextEdit()
         self.warnings_edit.setPlaceholderText("Предупреждения (если есть)")
-        self.warnings_edit.setMaximumHeight(100)
         self.warnings_edit.setReadOnly(True)
+        configure_text_panel(self.warnings_edit, min_height=120)
         result_layout.addWidget(self.warnings_edit)
+
+        result_layout.addWidget(
+            create_hint(
+                "Batch-режим ориентирован на аналитика и не заменяет оперативный экран ЛПР."
+            )
+        )
 
         main_layout.addWidget(result_group)
 
@@ -233,7 +279,7 @@ class BatchPredictPage(QWidget):
     def _on_start(self) -> None:
         """Запустить пакетный прогноз."""
         if not self.viewmodel:
-            QMessageBox.warning(self, "Предупреждение", "Workspace не открыт")
+            QMessageBox.warning(self, "Предупреждение", "Рабочее пространство не открыто")
             return
 
         # Валидация
@@ -287,7 +333,7 @@ class BatchPredictPage(QWidget):
             f"Записей: {result['predictions_count']}\n"
             f"Файл: {result['output_path']}"
         )
-        self.result_label.setStyleSheet("color: white; font-weight: bold;")
+        style_label(self.result_label, "metric", word_wrap=True)
 
         # Предупреждения
         if self.viewmodel and self.viewmodel.state.warnings:
@@ -310,6 +356,6 @@ class BatchPredictPage(QWidget):
         self.progress_bar.setVisible(False)
         self.status_label.setText("Ошибка")
         self.result_label.setText("Ошибка выполнения")
-        self.result_label.setStyleSheet("color: white;")
+        style_label(self.result_label, "metric", word_wrap=True)
         
         QMessageBox.critical(self, "Ошибка", message)

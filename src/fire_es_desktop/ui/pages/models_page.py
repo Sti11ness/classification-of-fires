@@ -17,6 +17,15 @@ from PySide6.QtCore import Qt
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from ..theme import (
+    configure_table,
+    configure_text_panel,
+    create_hint,
+    create_page_header,
+    create_static_page,
+    style_button,
+)
+
 
 class ModelsPage(QWidget):
     """Страница моделей."""
@@ -30,28 +39,36 @@ class ModelsPage(QWidget):
 
     def _init_ui(self) -> None:
         """Инициализировать UI."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        layout = create_static_page(self)
 
         # Заголовок
-        title = QLabel("Модели и версии")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: white;")
-        layout.addWidget(title)
+        layout.addWidget(
+            create_page_header(
+                "Модели и версии",
+                "Реестр обученных моделей, качество обучения и готовность к использованию на экране ЛПР.",
+            )
+        )
 
         # Список моделей
         models_group = QGroupBox("Зарегистрированные модели")
         models_layout = QVBoxLayout(models_group)
 
         self.models_table = QTableWidget()
-        self.models_table.setColumnCount(6)
+        self.models_table.setColumnCount(7)
         self.models_table.setHorizontalHeaderLabels([
-            "ID", "Название", "Тип", "Цель", "Метрика (F1)", "Активна"
+            "ID", "Название", "Тип", "Дата", "Метрика (F1)", "Для ЛПР", "Активна"
         ])
-        self.models_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.Stretch
-        )
-        self.models_table.setAlternatingRowColors(True)
+        configure_table(self.models_table, min_height=360, sortable=True)
+        header = self.models_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.Fixed)
+        self.models_table.setColumnWidth(1, 420)
+        self.models_table.setColumnWidth(6, 84)
         models_layout.addWidget(self.models_table)
 
         # Кнопки
@@ -59,19 +76,19 @@ class ModelsPage(QWidget):
         buttons_layout.setSpacing(10)
 
         self.refresh_btn = QPushButton("Обновить")
+        style_button(self.refresh_btn, "ghost")
         buttons_layout.addWidget(self.refresh_btn)
 
         self.activate_btn = QPushButton("Сделать активной")
-        self.activate_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4caf50;
-                color: white;
-                font-weight: bold;
-            }
-        """)
+        style_button(self.activate_btn, "success")
         buttons_layout.addWidget(self.activate_btn)
 
+        self.delete_btn = QPushButton("Удалить")
+        style_button(self.delete_btn, "danger")
+        buttons_layout.addWidget(self.delete_btn)
+
         self.open_folder_btn = QPushButton("Открыть папку")
+        style_button(self.open_folder_btn, "ghost")
         buttons_layout.addWidget(self.open_folder_btn)
 
         buttons_layout.addStretch()
@@ -86,8 +103,13 @@ class ModelsPage(QWidget):
 
         self.info_text = QTextEdit()
         self.info_text.setReadOnly(True)
-        self.info_text.setFixedHeight(200)
+        configure_text_panel(self.info_text, min_height=260)
         info_layout.addWidget(self.info_text)
+        info_layout.addWidget(
+            create_hint(
+                "Здесь показываются дата обучения, качество модели и объяснение, подходит ли она для экрана ЛПР."
+            )
+        )
 
         layout.addWidget(info_group)
 
@@ -99,6 +121,7 @@ class ModelsPage(QWidget):
         """Подключить сигналы."""
         self.refresh_btn.clicked.connect(self._on_refresh)
         self.activate_btn.clicked.connect(self._on_activate)
+        self.delete_btn.clicked.connect(self._on_delete)
         self.open_folder_btn.clicked.connect(self._on_open_folder)
         self.models_table.cellClicked.connect(self._on_cell_clicked)
 
@@ -119,50 +142,66 @@ class ModelsPage(QWidget):
         if not self.model_registry:
             return
 
-        self.models_table.setRowCount(0)
         models = self.model_registry.list_models()
-
         active_id = self.model_registry.get_active_model_id()
 
-        for model in models:
-            row = self.models_table.rowCount()
-            self.models_table.insertRow(row)
+        self.models_table.setUpdatesEnabled(False)
+        try:
+            self.models_table.setSortingEnabled(False)
+            self.models_table.setRowCount(0)
 
-            # ID
-            item = QTableWidgetItem(model.get("model_id", ""))
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.models_table.setItem(row, 0, item)
+            for model in models:
+                row = self.models_table.rowCount()
+                self.models_table.insertRow(row)
 
-            # Название
-            item = QTableWidgetItem(model.get("name", ""))
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.models_table.setItem(row, 1, item)
+                # ID
+                item = SortableTableWidgetItem(model.get("model_id", ""))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.models_table.setItem(row, 0, item)
 
-            # Тип
-            item = QTableWidgetItem(model.get("model_type", ""))
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.models_table.setItem(row, 2, item)
+                # Название
+                item = SortableTableWidgetItem(model.get("name", ""))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setToolTip(model.get("name", ""))
+                self.models_table.setItem(row, 1, item)
 
-            # Цель
-            item = QTableWidgetItem(model.get("target", ""))
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.models_table.setItem(row, 3, item)
+                # Тип
+                item = SortableTableWidgetItem(model.get("model_type", ""))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.models_table.setItem(row, 2, item)
 
-            # Метрика
-            metrics = model.get("metrics", {})
-            f1 = metrics.get("macro_f1", metrics.get("f1_macro", 0))
-            item = QTableWidgetItem(f"{f1:.4f}")
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self.models_table.setItem(row, 4, item)
+                # Дата
+                created_at = self._format_created_at(model.get("created_at"))
+                item = SortableTableWidgetItem(created_at)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.models_table.setItem(row, 3, item)
 
-            # Активна
-            is_active = model.get("model_id") == active_id
-            item = QTableWidgetItem("✓" if is_active else "")
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            item.setTextAlignment(Qt.AlignCenter)
-            self.models_table.setItem(row, 5, item)
+                # Метрика
+                metrics = model.get("metrics", {})
+                f1 = metrics.get("macro_f1", metrics.get("f1_macro", 0))
+                item = SortableTableWidgetItem(f"{f1:.4f}")
+                item.set_sort_key(float(f1))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.models_table.setItem(row, 4, item)
 
-        self.models_table.resizeColumnsToContents()
+                # Совместимость с ЛПР
+                compatible = self.model_registry.is_model_production_safe(model)
+                item = SortableTableWidgetItem("Да" if compatible else "Нет")
+                item.set_sort_key(1 if compatible else 0)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.models_table.setItem(row, 5, item)
+
+                # Активна
+                is_active = model.get("model_id") == active_id
+                item = SortableTableWidgetItem("✓" if is_active else "")
+                item.set_sort_key(1 if is_active else 0)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.models_table.setItem(row, 6, item)
+        finally:
+            self.models_table.setSortingEnabled(True)
+            self.models_table.setUpdatesEnabled(True)
 
     def _on_cell_clicked(self, row: int, col: int) -> None:
         """Клик по ячейке."""
@@ -175,36 +214,32 @@ class ModelsPage(QWidget):
         if model_info:
             info_text = f"=== {model_info.get('name', '')} ===\n\n"
             info_text += f"ID: {model_info.get('model_id', '')}\n"
-            info_text += f"Тип: {model_info.get('model_type', '')}\n"
-            info_text += f"Цель: {model_info.get('target', '')}\n"
-            info_text += f"Semantic target: {model_info.get('semantic_target', '')}\n"
-            info_text += f"Availability stage: {model_info.get('availability_stage', '')}\n"
-            info_text += f"Deployment role: {model_info.get('deployment_role', 'n/a')}\n"
-            info_text += f"Offline only: {model_info.get('offline_only', False)}\n"
-            info_text += f"Feature set: {model_info.get('feature_set', '')}\n"
-            info_text += f"Split protocol: {model_info.get('split_protocol', '')}\n"
-            info_text += f"Event overlap rate: {model_info.get('event_overlap_rate', 'n/a')}\n"
-            info_text += f"Normative version: {model_info.get('normative_version', 'n/a')}\n"
-            info_text += f"Forbidden feature check: {model_info.get('forbidden_feature_check_passed', 'n/a')}\n"
-            info_text += f"Создана: {model_info.get('created_at', '')}\n\n"
+            info_text += f"Тип модели: {model_info.get('model_type', '')}\n"
+            info_text += f"Дата обучения: {self._format_created_at(model_info.get('created_at'))}\n"
+            info_text += f"Целевая колонка: {model_info.get('target', '')}\n"
+            info_text += f"Набор признаков: {model_info.get('feature_set', '')}\n"
+            info_text += f"Стадия данных: {self._format_stage_value(model_info.get('availability_stage', ''))}\n"
+            info_text += f"Тип разметки: {model_info.get('semantic_target', '')}\n"
+            info_text += f"Схема проверки: {self._format_split_value(model_info.get('split_protocol', ''))}\n"
+            info_text += f"Версия нормативов: {model_info.get('normative_version', '—')}\n"
+            info_text += f"Записей в обучении: {model_info.get('dataset_info', {}).get('samples', 0)}\n\n"
 
-            info_text += "Метрики:\n"
+            info_text += "Качество модели:\n"
             for k, v in model_info.get("metrics", {}).items():
                 if isinstance(v, float):
                     info_text += f"  {k}: {v:.4f}\n"
                 else:
                     info_text += f"  {k}: {v}\n"
 
-            info_text += f"\nПризнаков: {len(model_info.get('features', []))}\n"
-            info_text += f"Выборка: {model_info.get('dataset_info', {}).get('samples', 0)}\n"
-            warnings = []
-            if model_info.get("feature_set") == "online_tactical":
-                warnings.append("legacy feature set")
-            if model_info.get("event_overlap_rate", 0.0) not in (0, 0.0):
-                warnings.append("non-zero event overlap")
-            if model_info.get("semantic_target") != "rank_tz_vector":
-                warnings.append("non-canonical semantic target")
-            info_text += f"Warnings: {', '.join(warnings) if warnings else 'none'}\n"
+            reasons = self.model_registry.get_production_unsafe_reasons(model_info)
+            compatibility = "Да" if not reasons else "Нет"
+            info_text += f"\nСовместима с экраном ЛПР: {compatibility}\n"
+            if reasons:
+                info_text += "Почему нельзя сделать рабочей:\n"
+                for reason in reasons:
+                    info_text += f"  - {reason}\n"
+            else:
+                info_text += "Модель можно использовать на рабочем экране ЛПР.\n"
 
             self.info_text.setText(info_text)
 
@@ -234,10 +269,40 @@ class ModelsPage(QWidget):
                 )
                 self._load_models()
             else:
+                model_info = self.model_registry.get_model_info(model_id)
+                reasons = self.model_registry.get_production_unsafe_reasons(model_info or {})
                 QMessageBox.critical(
                     self, "Ошибка",
-                    "Не удалось активировать модель. Для rank_tz разрешены только production-safe модели."
+                    "Не удалось сделать модель рабочей для ЛПР.\n\n"
+                    + ("\n".join(f"• {reason}" for reason in reasons) if reasons else "Причина не определена.")
                 )
+
+    def _on_delete(self) -> None:
+        """Удалить модель и связанные файлы."""
+        selected_rows = self.models_table.selectedItems()
+        if not selected_rows or not self.model_registry:
+            QMessageBox.warning(self, "Предупреждение", "Выберите модель")
+            return
+
+        row = selected_rows[0].row()
+        model_id = self.models_table.item(row, 0).text()
+        model_name = self.models_table.item(row, 1).text()
+        answer = QMessageBox.question(
+            self,
+            "Удаление модели",
+            f"Удалить модель «{model_name}» и связанные файлы?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        if self.model_registry.delete_model(model_id):
+            QMessageBox.information(self, "Удаление", "Модель удалена")
+            self.info_text.clear()
+            self._load_models()
+        else:
+            QMessageBox.critical(self, "Ошибка", "Не удалось удалить модель")
 
     def _on_open_folder(self) -> None:
         """Открыть папку моделей."""
@@ -249,3 +314,47 @@ class ModelsPage(QWidget):
                 self, "Предупреждение",
                 "Папка моделей не найдена"
             )
+
+    @staticmethod
+    def _format_created_at(value: Optional[str]) -> str:
+        if not value:
+            return "—"
+        return str(value).replace("T", " ")[:19]
+
+    @staticmethod
+    def _format_stage_value(value: Optional[str]) -> str:
+        mapping = {
+            "dispatch_initial": "до прибытия подразделения",
+            "arrival_update": "после прибытия подразделения",
+            "first_hose_update": "после подачи первого ствола",
+            "retrospective": "архивный режим",
+        }
+        return mapping.get(str(value), str(value))
+
+    @staticmethod
+    def _format_split_value(value: Optional[str]) -> str:
+        mapping = {
+            "group_shuffle": "групповое разделение без пересечения событий",
+            "group_kfold": "групповая перекрестная проверка",
+            "temporal_holdout": "разделение по времени",
+            "row_random_legacy": "устаревшее случайное разделение",
+            "": "—",
+            None: "—",
+        }
+        return mapping.get(value, str(value))
+
+
+class SortableTableWidgetItem(QTableWidgetItem):
+    """Элемент таблицы с управляемым ключом сортировки."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self._sort_key: Any = text
+
+    def set_sort_key(self, value: Any) -> None:
+        self._sort_key = value
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if isinstance(other, SortableTableWidgetItem):
+            return self._sort_key < other._sort_key
+        return super().__lt__(other)

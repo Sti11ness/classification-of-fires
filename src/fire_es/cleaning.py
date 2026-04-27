@@ -173,7 +173,10 @@ def build_event_identity(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_fact_sheet(
-    sheet_name: str, xl: pd.ExcelFile, header_row: Optional[int] = None
+    sheet_name: str,
+    xl: pd.ExcelFile,
+    header_row: Optional[int] = None,
+    nrows: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Загрузка факта из листа Excel с нормализацией колонок.
@@ -195,7 +198,7 @@ def load_fact_sheet(
     if header_row is not None:
         header = header_row
 
-    df = xl.parse(sheet_name, header=header)
+    df = xl.parse(sheet_name, header=header, nrows=nrows)
 
     # Нормализация имён колонок
     from .utils import map_col, norm_col

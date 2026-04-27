@@ -14,6 +14,7 @@ from datetime import datetime
 
 import pandas as pd
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import text
 
 # Импорт из domain слоя
 import sys
@@ -413,14 +414,33 @@ class DbRepository:
             Словарь со статистикой.
         """
         with self.get_session() as session:
-            fires_count = session.query(Fire).count()
+            try:
+                fires_count = int(
+                    session.execute(text("SELECT COUNT(*) FROM fires_historical")).scalar() or 0
+                )
+            except Exception:
+                fires_count = session.query(Fire).count()
             decisions_count = session.query(LPRDecision).count()
             models_count = session.query(Model).count()
+            try:
+                lpr_train_count = int(
+                    session.execute(text("SELECT COUNT(*) FROM fires_lpr_train")).scalar() or 0
+                )
+            except Exception:
+                lpr_train_count = 0
+            try:
+                synthetic_count = int(
+                    session.execute(text("SELECT COUNT(*) FROM train_synthetic")).scalar() or 0
+                )
+            except Exception:
+                synthetic_count = 0
             active_model = session.query(Model).filter(Model.is_active == True).first()
 
             return {
                 "fires_count": fires_count,
                 "lpr_decisions_count": decisions_count,
+                "lpr_train_count": lpr_train_count,
+                "synthetic_count": synthetic_count,
                 "models_count": models_count,
                 "active_model_id": active_model.id if active_model else None,
                 "active_model_name": (

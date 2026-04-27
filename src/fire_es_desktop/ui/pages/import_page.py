@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFileDialog, QTableWidget, QTableWidgetItem, QGroupBox,
     QCheckBox, QListWidget, QMessageBox, QProgressBar,
+    QComboBox,
     QAbstractItemView, QHeaderView
 )
 from PySide6.QtCore import Qt, QThread, Signal
@@ -20,8 +21,18 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import sqlite3
 
 from ...viewmodels import ImportDataViewModel
+from ..theme import (
+    configure_table,
+    create_hint,
+    create_page_header,
+    create_scrollable_page,
+    create_status_label,
+    style_button,
+    style_label,
+)
 
 
 class ImportWorker(QThread):
@@ -65,41 +76,55 @@ class ImportPage(QWidget):
 
     def _init_ui(self) -> None:
         """Инициализировать UI."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        _, _, _, layout = create_scrollable_page(self)
 
         # Заголовок
-        title = QLabel("Импорт данных из Excel")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: white;")
-        layout.addWidget(title)
+        layout.addWidget(
+            create_page_header(
+                "Импорт данных из Excel",
+                "Загрузка карточек пожаров, выбор листов, предпросмотр и сохранение очищенных данных в рабочее пространство.",
+            )
+        )
 
         # Выбор файла
         file_group = QGroupBox("Файл Excel")
         file_layout = QHBoxLayout(file_group)
 
         self.file_path_label = QLabel("Файл не выбран")
-        self.file_path_label.setStyleSheet("color: white;")
+        style_label(self.file_path_label, "muted", word_wrap=True)
         file_layout.addWidget(self.file_path_label, 1)
 
         self.select_file_btn = QPushButton("Выбрать файл")
-        self.select_file_btn.setFixedWidth(150)
+        style_button(self.select_file_btn, "primary")
         file_layout.addWidget(self.select_file_btn)
 
         layout.addWidget(file_group)
 
         # Выбор листов
-        sheets_group = QGroupBox("Листы")
+        sheets_group = QGroupBox("Листы и таблицы")
         sheets_layout = QVBoxLayout(sheets_group)
 
         self.sheets_list = QListWidget()
-        self.sheets_list.setFixedHeight(150)
+        self.sheets_list.setMinimumHeight(180)
         self.sheets_list.setSelectionMode(QListWidget.MultiSelection)
         sheets_layout.addWidget(self.sheets_list)
 
+        actions_layout = QHBoxLayout()
+
+        self.select_all_btn = QPushButton("Выбрать все")
+        style_button(self.select_all_btn, "ghost")
+        actions_layout.addWidget(self.select_all_btn)
+
         self.preview_btn = QPushButton("Предпросмотр")
-        self.preview_btn.setFixedWidth(150)
-        sheets_layout.addWidget(self.preview_btn, alignment=Qt.AlignLeft)
+        style_button(self.preview_btn, "ghost")
+        actions_layout.addWidget(self.preview_btn)
+        actions_layout.addStretch()
+        sheets_layout.addLayout(actions_layout)
+        sheets_layout.addWidget(
+            create_hint(
+                "Можно выбрать одну или несколько вкладок. Предпросмотр показывает либо данные как в Excel, либо уже подготовленный вариант для системы."
+            )
+        )
 
         layout.addWidget(sheets_group)
 
@@ -115,6 +140,16 @@ class ImportPage(QWidget):
         self.save_db_checkbox.setChecked(True)
         options_layout.addWidget(self.save_db_checkbox)
 
+        self.skip_duplicates_checkbox = QCheckBox("Пропускать уже загруженные события")
+        self.skip_duplicates_checkbox.setChecked(True)
+        options_layout.addWidget(self.skip_duplicates_checkbox)
+
+        options_layout.addWidget(QLabel("Режим предпросмотра:"))
+        self.preview_mode_combo = QComboBox()
+        self.preview_mode_combo.addItem("Очищенные данные", "cleaned")
+        self.preview_mode_combo.addItem("Сырой лист", "raw")
+        options_layout.addWidget(self.preview_mode_combo)
+
         options_layout.addStretch()
 
         layout.addWidget(options_group)
@@ -124,7 +159,6 @@ class ImportPage(QWidget):
         preview_layout = QVBoxLayout(preview_group)
 
         self.preview_table = QTableWidget()
-        self.preview_table.setFixedHeight(300)
         self.preview_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.preview_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.preview_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -132,6 +166,7 @@ class ImportPage(QWidget):
         self.preview_table.setWordWrap(False)
         self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.preview_table.horizontalHeader().setStretchLastSection(False)
+        configure_table(self.preview_table, min_height=360)
         preview_layout.addWidget(self.preview_table)
 
         layout.addWidget(preview_group)
@@ -144,29 +179,14 @@ class ImportPage(QWidget):
         control_layout.addWidget(self.progress_bar, 1)
 
         self.import_btn = QPushButton("Импортировать")
-        self.import_btn.setFixedHeight(40)
-        self.import_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4caf50;
-                color: white;
-                font-weight: bold;
-                font-size: 14px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-            }
-        """)
+        style_button(self.import_btn, "success", large=True)
         control_layout.addWidget(self.import_btn)
 
         layout.addLayout(control_layout)
 
         # Статус
-        self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: white;")
+        self.status_label = create_status_label()
+        self.status_label.setText("Выберите Excel-файл и один или несколько листов для импорта.")
         layout.addWidget(self.status_label)
 
         layout.addStretch()
@@ -176,6 +196,7 @@ class ImportPage(QWidget):
     def _connect_signals(self) -> None:
         """Подключить сигналы."""
         self.select_file_btn.clicked.connect(self._on_select_file)
+        self.select_all_btn.clicked.connect(self._on_select_all)
         self.preview_btn.clicked.connect(self._on_preview)
         self.import_btn.clicked.connect(self._on_import)
 
@@ -201,7 +222,7 @@ class ImportPage(QWidget):
             success = self.viewmodel.select_file(Path(file_path))
             if success:
                 self.file_path_label.setText(file_path)
-                self.file_path_label.setStyleSheet("color: white;")
+                self.status_label.setText("Файл выбран. Выберите одну или несколько вкладок и откройте предпросмотр.")
 
                 # Заполнить список листов
                 self.sheets_list.clear()
@@ -218,13 +239,27 @@ class ImportPage(QWidget):
         if not self.viewmodel:
             return
 
-        # Получить выбранный лист
+        # Получить выбранные листы
         selected_items = self.sheets_list.selectedItems()
-        sheet_name = selected_items[0].text() if selected_items else None
+        sheet_names = [item.text() for item in selected_items]
+        sheet_name = sheet_names[0] if len(sheet_names) == 1 else None
+        self.viewmodel.set_preview_mode(self.preview_mode_combo.currentData())
 
-        success = self.viewmodel.load_preview(sheet_name=sheet_name, limit=100)
+        success = self.viewmodel.load_preview(
+            sheet_name=sheet_name,
+            sheet_names=sheet_names if len(sheet_names) > 1 else None,
+            limit=100,
+        )
         if success and self.viewmodel.preview_data is not None:
             self._show_preview(self.viewmodel.preview_data)
+            mode_label = self.preview_mode_combo.currentText().lower()
+            selected_count = len(sheet_names) if sheet_names else 1
+            if selected_count > 1:
+                self.status_label.setText(
+                    f"Показан объединенный {mode_label} предпросмотр по {selected_count} вкладкам."
+                )
+            else:
+                self.status_label.setText(f"Показан {mode_label} предпросмотр выбранной вкладки.")
         else:
             QMessageBox.critical(
                 self, "Ошибка",
@@ -233,26 +268,28 @@ class ImportPage(QWidget):
 
     def _show_preview(self, df: pd.DataFrame) -> None:
         """Показать предпросмотр."""
-        self.preview_table.clear()
-        self.preview_table.setColumnCount(len(df.columns))
-        self.preview_table.setHorizontalHeaderLabels(df.columns.tolist())
-        self.preview_table.setRowCount(min(len(df), 100))
+        self.preview_table.setUpdatesEnabled(False)
+        try:
+            self.preview_table.clear()
+            self.preview_table.setColumnCount(len(df.columns))
+            self.preview_table.setHorizontalHeaderLabels(df.columns.tolist())
+            self.preview_table.setRowCount(min(len(df), 100))
 
-        for i, row in df.head(100).iterrows():
-            for j, value in enumerate(row):
-                item = QTableWidgetItem(str(value))
-                self.preview_table.setItem(i, j, item)
+            for i, row in df.head(100).iterrows():
+                for j, value in enumerate(row):
+                    item = QTableWidgetItem(str(value))
+                    self.preview_table.setItem(i, j, item)
 
-        self.preview_table.resizeColumnsToContents()
-        for col in range(self.preview_table.columnCount()):
-            self.preview_table.setColumnWidth(
-                col, max(120, min(280, self.preview_table.columnWidth(col)))
-            )
+            for col, column_name in enumerate(df.columns):
+                estimated = max(120, min(240, 14 + len(str(column_name)) * 9))
+                self.preview_table.setColumnWidth(col, estimated)
+        finally:
+            self.preview_table.setUpdatesEnabled(True)
 
     def _on_import(self) -> None:
         """Импортировать данные."""
         if not self.viewmodel:
-            QMessageBox.warning(self, "Предупреждение", "Workspace не открыт")
+            QMessageBox.warning(self, "Предупреждение", "Рабочее пространство не открыто")
             return
 
         # Настройки
@@ -262,6 +299,7 @@ class ImportPage(QWidget):
         )
         self.viewmodel.set_clean_option(self.clean_checkbox.isChecked())
         self.viewmodel.set_save_to_db_option(self.save_db_checkbox.isChecked())
+        self.viewmodel.set_skip_existing_events_option(self.skip_duplicates_checkbox.isChecked())
 
         # Запустить в фоне
         self.worker = ImportWorker(self.viewmodel)
@@ -289,12 +327,25 @@ class ImportPage(QWidget):
         self.progress_bar.setVisible(False)
 
         rows = result.get("added_to_db", result.get("clean_rows", 0))
-        self.status_label.setText(f"Импортировано {rows} записей")
-        self.status_label.setStyleSheet("color: white;")
+        skipped_existing = result.get("skipped_existing_duplicates", 0)
+        total_rows = self._get_total_rows_in_workspace()
+        status_parts = [f"Добавлено {rows} записей"]
+        if skipped_existing:
+            status_parts.append(f"пропущено как уже известные {skipped_existing}")
+        status_parts.append(f"всего строк в рабочем пространстве {total_rows}")
+        self.status_label.setText(". ".join(status_parts) + ".")
 
+        info_lines = [
+            "Импорт завершён.",
+            "",
+            f"Добавлено записей: {rows}",
+        ]
+        if skipped_existing:
+            info_lines.append(f"Пропущено уже известных событий: {skipped_existing}")
+        info_lines.append(f"Всего строк в рабочем пространстве: {total_rows}")
         QMessageBox.information(
             self, "Импорт завершён",
-            f"Успешно импортировано {rows} записей"
+            "\n".join(info_lines),
         )
 
     def _on_error(self, message: str) -> None:
@@ -302,6 +353,26 @@ class ImportPage(QWidget):
         self.import_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status_label.setText("Ошибка импорта")
-        self.status_label.setStyleSheet("color: white;")
 
         QMessageBox.critical(self, "Ошибка импорта", message)
+
+    def _on_select_all(self) -> None:
+        for index in range(self.sheets_list.count()):
+            item = self.sheets_list.item(index)
+            item.setSelected(True)
+
+    def _get_total_rows_in_workspace(self) -> int:
+        if not self.viewmodel:
+            return 0
+        conn = None
+        try:
+            conn = sqlite3.connect(self.viewmodel.db_path)
+            row = conn.execute("SELECT COUNT(*) FROM fires_historical").fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        except Exception:
+            return 0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass

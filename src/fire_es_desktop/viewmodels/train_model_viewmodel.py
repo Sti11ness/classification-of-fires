@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Callable
 
 from ..use_cases import TrainModelUseCase, UseCaseResult
-from ..infra import ModelRegistry
-from fire_es.rank_tz_contract import get_feature_set_spec
+from ..infra import ModelRegistry, TrainingDataStore
+from fire_es.rank_tz_contract import FIELD_SPECS, get_feature_set_spec
 
 logger = logging.getLogger("TrainModelViewModel")
 
@@ -44,6 +44,7 @@ class TrainModelViewModel:
 
         self.train_use_case = TrainModelUseCase(db_path, models_path)
         self.model_registry = ModelRegistry(models_path)
+        self.training_store = TrainingDataStore(db_path)
 
         # Состояние
         self.is_training = False
@@ -57,6 +58,15 @@ class TrainModelViewModel:
         self.custom_features: List[str] = []
         self.test_size = 0.25
         self.class_weight = "balanced"
+        self.include_historical = True
+        self.include_lpr = True
+        self.synthetic_method: Optional[str] = None
+        self.synthetic_k_neighbors = 5
+        self.synthetic_m_neighbors = 10
+        self.synthetic_target_total_rows: Optional[int] = None
+        self.tuning_enabled = False
+        self.tuning_trials = 50
+        self.metric_primary = "f1_macro"
 
         # Callbacks
         self.on_training_started: Optional[Callable[[], None]] = None
@@ -88,6 +98,36 @@ class TrainModelViewModel:
         """Установить балансировку классов."""
         self.class_weight = class_weight
 
+    def set_include_historical(self, include_historical: bool) -> None:
+        self.include_historical = include_historical
+
+    def set_include_lpr(self, include_lpr: bool) -> None:
+        self.include_lpr = include_lpr
+
+    def set_synthetic_method(self, synthetic_method: Optional[str]) -> None:
+        self.synthetic_method = synthetic_method
+
+    def set_synthetic_k_neighbors(self, k_neighbors: int) -> None:
+        self.synthetic_k_neighbors = max(2, int(k_neighbors))
+
+    def set_synthetic_m_neighbors(self, m_neighbors: int) -> None:
+        self.synthetic_m_neighbors = max(2, int(m_neighbors))
+
+    def set_synthetic_target_total_rows(self, total_rows: Optional[int]) -> None:
+        self.synthetic_target_total_rows = None if total_rows in (None, 0) else max(1, int(total_rows))
+
+    def set_tuning_enabled(self, tuning_enabled: bool) -> None:
+        self.tuning_enabled = bool(tuning_enabled)
+
+    def set_tuning_trials(self, tuning_trials: int) -> None:
+        self.tuning_trials = max(1, int(tuning_trials))
+
+    def set_metric_primary(self, metric_primary: str) -> None:
+        self.metric_primary = metric_primary
+
+    def cancel_training(self) -> None:
+        self.train_use_case.cancel()
+
     def train(self) -> None:
         """
         Запустить обучение.
@@ -116,7 +156,16 @@ class TrainModelViewModel:
                 feature_set=self.feature_set,
                 custom_features=self.custom_features if self.feature_set == "custom" else None,
                 test_size=self.test_size,
-                class_weight=self.class_weight
+                class_weight=self.class_weight,
+                include_historical=self.include_historical,
+                include_lpr=self.include_lpr,
+                synthetic_method=self.synthetic_method,
+                synthetic_k_neighbors=self.synthetic_k_neighbors,
+                synthetic_m_neighbors=self.synthetic_m_neighbors,
+                synthetic_target_total_rows=self.synthetic_target_total_rows,
+                tuning_enabled=self.tuning_enabled,
+                tuning_trials=self.tuning_trials,
+                metric_primary=self.metric_primary,
             )
 
             if result.success:
@@ -132,7 +181,11 @@ class TrainModelViewModel:
                     metrics=result.data["metrics"],
                     params={
                         "test_size": self.test_size,
-                        "class_weight": self.class_weight
+                        "class_weight": self.class_weight,
+                        "tuning_enabled": self.tuning_enabled,
+                        "tuning_trials": self.tuning_trials,
+                        "synthetic_target_total_rows": self.synthetic_target_total_rows,
+                        "metric_primary": self.metric_primary,
                     },
                     dataset_info={
                         "samples": result.data["samples"],
@@ -203,3 +256,32 @@ class TrainModelViewModel:
     def get_active_model_id(self) -> Optional[str]:
         """Получить ID активной модели."""
         return self.model_registry.get_active_model_id()
+
+    def get_training_source_counts(self) -> Dict[str, int]:
+        return self.training_store.get_source_counts()
+
+    def sync_new_lpr_decisions(self, *, promoted_by: str = "analyst") -> Dict[str, int]:
+        return self.training_store.sync_new_lpr_decisions(promoted_by=promoted_by)
+
+    def get_available_synthetic_methods(self) -> List[Dict[str, Any]]:
+        feature_spec = get_feature_set_spec(self.feature_set)
+        has_categorical = any(
+            FIELD_SPECS.get(name, {}).get("kind") == "categorical"
+            for name in feature_spec["feature_order"]
+        )
+        return [
+            {"value": None, "label": "Без синтетики", "enabled": True, "reason": ""},
+            {"value": "smote", "label": "SMOTE", "enabled": True, "reason": ""},
+            {"value": "adasyn", "label": "ADASYN", "enabled": True, "reason": ""},
+            {"value": "borderlinesmote", "label": "BorderlineSMOTE", "enabled": True, "reason": ""},
+            {"value": "svmsmote", "label": "SVMSMOTE", "enabled": True, "reason": ""},
+            {
+                "value": "smotenc",
+                "label": "SMOTENC",
+                "enabled": has_categorical,
+                "reason": "" if has_categorical else "В выбранном наборе признаков нет категориальных полей.",
+            },
+        ]
+
+    def close(self) -> None:
+        self.training_store.close()

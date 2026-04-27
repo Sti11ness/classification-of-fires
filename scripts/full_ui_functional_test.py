@@ -37,6 +37,7 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 from fire_es.model_train import FEATURE_SETS  # noqa: E402
+from fire_es_desktop.use_cases import AssignRankTzUseCase  # noqa: E402
 from fire_es_desktop.ui import MainWindow  # noqa: E402
 
 
@@ -258,6 +259,14 @@ def run_full_ui_test(ctx: UiTestContext) -> Tuple[bool, List[UiTestResult], str]
             )
         results.append(UiTestResult("Import: select + preview + import", True))
 
+        # 2.5 Явная разметка rank_tz перед обучением
+        stage("Assign rank_tz")
+        db_path = ctx.workspace_path / "fire_es.sqlite"
+        assign_result = AssignRankTzUseCase(db_path).execute()
+        if not assign_result.success:
+            raise AssertionError(f"AssignRankTzUseCase failed: {assign_result.message}")
+        results.append(UiTestResult("Assign rank_tz", True))
+
         # 3. Обучение модели: train + activate
         stage("Training run")
         training_page = win.training_page
@@ -322,14 +331,13 @@ def run_full_ui_test(ctx: UiTestContext) -> Tuple[bool, List[UiTestResult], str]
             "building_floors": 9,
             "fire_floor": 3,
             "fire_resistance_code": 2,
-            "source_item_code": 12,
             "distance_to_station": 2.5,
             "t_detect_min": 15,
             "t_report_min": 25,
-            "t_arrival_min": 35,
-            "t_first_hose_min": 45,
         }
         for field_name, value in lpr_inputs.items():
+            if field_name not in lpr_page.input_widgets:
+                continue
             lpr_page.input_widgets[field_name].setValue(value)
 
         click(app, lpr_page.predict_btn)

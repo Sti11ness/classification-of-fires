@@ -4,11 +4,13 @@ from pathlib import Path
 import pandas as pd
 
 from fire_es.db import init_db
+from fire_es_desktop.infra import TrainingDataStore
 from fire_es_desktop.use_cases import TrainModelUseCase
 
 
 def _seed_training_db(db_path: Path) -> None:
     db = init_db(str(db_path))
+    store = TrainingDataStore(db_path)
     rows = []
     for idx in range(24):
         cls = (idx % 6) + 1
@@ -39,8 +41,8 @@ def _seed_training_db(db_path: Path) -> None:
                 "event_id": f"evt-{idx // 2}",
             }
         )
-    for row in rows:
-        db.add_fire(row)
+    store.insert_historical_records(rows)
+    store.close()
     db.close()
 
 
